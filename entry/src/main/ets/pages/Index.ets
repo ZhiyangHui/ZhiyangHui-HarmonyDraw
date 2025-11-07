@@ -4,7 +4,7 @@ import image from '@ohos.multimedia.image'
 
 @Entry
 @Component
-export struct Index {
+struct Index {
   // 画布状态（
   @State pixelMap?: image.PixelMap = undefined
   @State zoom: number = 1.0
@@ -101,11 +101,16 @@ export struct Index {
   }
 
   private async saveImage() {
-    if (!this.pixelMap) {
-      promptAction.showToast({ message: '请先打开图片' })
-      return
+    try {
+      if (!this.pixelMap) {
+        promptAction.showToast({ message: '请先打开图片' })
+        return
+      }
+      // TODO: 保存逻辑
+      promptAction.showToast({ message: '保存功能即将接入' })
+    } catch (err) {
+      promptAction.showToast({ message: '保存失败' })
+      console.error('saveImage error', err)
     }
-    // 下一步我们接 ImagePacker + 媒体库写入
-    promptAction.showToast({ message: '保存功能即将接入' })
   }
 }
