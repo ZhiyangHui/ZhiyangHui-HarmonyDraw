@@ -5,7 +5,7 @@ import image from '@ohos.multimedia.image'
 @Entry
 @Component
 export struct Index {
-  // 画布状态（避免与 ArkUI 的 .scale()/.translate() 同名）
+  // 画布状态（
   @State pixelMap?: image.PixelMap = undefined
   @State zoom: number = 1.0
   @State offsetX: number = 0
@@ -16,28 +16,15 @@ export struct Index {
   private lastPanY: number = 0
 
   build() {
-    Column({ space: 8 }) {
-      // 顶部栏
-      Row({ space: 8 }) {
-        Text('鸿绘 HarmonyDraw')
-          .fontSize(20).fontWeight(FontWeight.Bold).layoutWeight(1)
-
-        Button('打开图片', { type: ButtonType.Capsule })
-          .onClick(() => this.pickImage())
-
-        Button('保存', { type: ButtonType.Capsule })
-          .onClick(() => this.saveImage())
-
-        Button('重置', { type: ButtonType.Capsule })
-          .onClick(() => this.resetView())
-      }
-      .padding(12).backgroundColor('#F6F6F7').width('100%')
-
-      // 画布区域
+    Column() {
+      // 画布
       Stack() {
         if (!this.pixelMap) {
           Column() {
-            Text('点击“打开图片”开始编辑').fontSize(16).opacity(0.8)
+            Text('点击“打开图片”开始编辑')
+              .fontSize(14)
+              .fontColor('#9AA1A8')
+              .letterSpacing(0.5)
           }
           .width('100%').height('100%')
           .justifyContent(FlexAlign.Center)
@@ -46,43 +33,48 @@ export struct Index {
           Image(this.pixelMap)
             .objectFit(ImageFit.Contain)
             .width('100%').height('100%')
-            .scale({ x: this.zoom, y: this.zoom })           // 使用组件属性，不与@State重名
-            .translate({ x: this.offsetX, y: this.offsetY }) // 平移
+          // === 若你保留交互，这里别动 ===
         }
       }
-      .width('100%').height('100%').backgroundColor('#FFFFFF')
-      // 拖拽手势
-      .gesture(
-        PanGesture()
-          .onActionStart(e => {
-            const f = e.fingerList[0]
-            this.lastPanX = f.localX
-            this.lastPanY = f.localY
-          })
-          .onActionUpdate(e => {
-            const f = e.fingerList[0]
-            this.offsetX += (f.localX - this.lastPanX)
-            this.offsetY += (f.localY - this.lastPanY)
-            this.lastPanX = f.localX
-            this.lastPanY = f.localY
-          })
-      )
-      // 捏合缩放
-      .gesture(
-        PinchGesture()
-          .onActionUpdate(e => {
-            const next = this.zoom * e.scale
-            this.zoom = Math.min(6.0, Math.max(0.2, next))
-          })
-      )
-      // 双击复位
-      .gesture(
-        TapGesture({ count: 2 }).onAction(() => this.resetView())
-      )
-      .padding(8)
+      .width('100%')
+      .layoutWeight(1)
+      .backgroundColor('#FFFFFF')
+      .borderRadius(12)
+      .shadow({ radius: 16, color:'#1A000000', offsetY: 2 })
+      .padding(2)
+      .clip(true)
+
+      // 底部工具栏
+      Row({ space: 10 }) {
+        // 左侧标题弱化，给按钮腾空间
+        Text('鸿绘')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#6B7280')
+          .layoutWeight(1)
+
+        // 统一按钮规格：高度/内边距/最小宽
+        Button('打开图片', { type: ButtonType.Capsule })
+          .height(40).padding({ left:14, right:14 })
+        Button('保存', { type: ButtonType.Capsule })
+          .height(40).padding({ left:14, right:14 })
+        Button('重置', { type: ButtonType.Capsule })
+          .height(40).padding({ left:14, right:14 })
+          .backgroundColor('#EEF2FF')   // 弱主次对比
+          .fontColor('#3B82F6')
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+      .backgroundColor('#F7F8FA')
+      .border({ width: { top: 0.5 }, color: '#E5E7EB' })
+
+
     }
-    .width('100%').height('100%').backgroundColor('#FAFAFA')
+    .width('100%').height('100%')
+    .backgroundColor('#F2F4F7')
+    .padding(12)
   }
+
 
   private resetView() {
     this.zoom = 1.0
