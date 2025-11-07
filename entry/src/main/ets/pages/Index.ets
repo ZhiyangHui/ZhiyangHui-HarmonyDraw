@@ -64,10 +64,10 @@ export struct Index {
           .fontColor('#3B82F6')
       }
       .width('100%')
-      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+      .padding({ left: 12, right: 12, top: 10, bottom: 0 })
       .backgroundColor('#F7F8FA')
       .border({ width: { top: 0.5 }, color: '#E5E7EB' })
-
+      .alignItems(VerticalAlign.Center)
 
     }
     .width('100%').height('100%')
