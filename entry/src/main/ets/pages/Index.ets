@@ -1,6 +1,8 @@
 import promptAction from '@ohos.promptAction'
 import filePicker from '@ohos.file.picker'
 import image from '@ohos.multimedia.image'
+import fs from '@ohos.file.fs'
+
 
 @Entry
 @Component
@@ -53,15 +55,20 @@ export struct Index {
           .fontColor('#6B7280')
           .layoutWeight(1)
 
-        // 统一按钮规格：高度/内边距/最小宽
+        // 按钮
         Button('打开图片', { type: ButtonType.Capsule })
           .height(40).padding({ left:14, right:14 })
+          .onClick(() => this.pickImage())
+
         Button('保存', { type: ButtonType.Capsule })
           .height(40).padding({ left:14, right:14 })
+          .onClick(() => this.saveImage())
+
         Button('重置', { type: ButtonType.Capsule })
           .height(40).padding({ left:14, right:14 })
-          .backgroundColor('#EEF2FF')   // 弱主次对比
+          .backgroundColor('#EEF2FF')
           .fontColor('#3B82F6')
+          .onClick(() => this.resetView())
       }
       .width('100%')
       .padding({ left: 12, right: 12, top: 10, bottom: 0 })
@@ -82,24 +89,59 @@ export struct Index {
     this.offsetY = 0
   }
 
-  // 打开图片 → PixelMap
+  // 打开图片
   private async pickImage() {
     try {
       const picker = new filePicker.PhotoViewPicker()
-      // NEXT：这里没有 MIMEType 字段，传最大选择数即可
       const res = await picker.select({ maxSelectNumber: 1 })
-      if (!res || !res.photoUris || res.photoUris.length === 0) return
+
+      if (!res || !res.photoUris || res.photoUris.length === 0) {
+        promptAction.showToast({ message: '未选择图片' })
+        return
+      }
 
       const uri = res.photoUris[0]
-      const src = image.createImageSource(uri)
-      const pm = await src.createPixelMap({})
+      console.info(`>>> Selected URI = ${uri}`)
+
+      let pm: image.PixelMap
+
+      if (uri.startsWith('datashare://')) {
+        const fdObj = fs.openSync(uri, fs.OpenMode.READ_ONLY)
+        const fd = fdObj.fd
+        const src = image.createImageSource(fd)
+        pm = await src.createPixelMap({})
+        src.release?.()
+        fs.closeSync(fdObj)
+      } else {
+        const src = image.createImageSource(uri)
+        pm = await src.createPixelMap({})
+        src.release?.()
+      }
+
       this.pixelMap = pm
       this.resetView()
+      promptAction.showToast({ message: '图片已加载 ✅' })
+
     } catch (err) {
-      promptAction.showToast({ message: `打开失败：${JSON.stringify(err)}` })
+      let code = 'NA'
+      let message = 'unknown'
+
+      if (typeof err === 'object' && err !== null) {
+        // ArkTS 严格模式下兼容访问错误属性
+        code = err.code !== undefined ? String(err.code) : code
+        message = err.message !== undefined ? String(err.message) : message
+      } else {
+        message = String(err)
+      }
+
+      const msg = `code=${code} msg=${message}`
+      console.error(`[pickImage] failed: ${msg}`)
+      console.log(msg)
+      promptAction.showToast({ message: `打开失败：${msg}` })
     }
   }
 
+  // 保存图片
   private async saveImage() {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
