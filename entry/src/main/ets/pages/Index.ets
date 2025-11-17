@@ -1,13 +1,19 @@
-import promptAction from '@ohos.promptAction'
-import filePicker from '@ohos.file.picker'
-import image from '@ohos.multimedia.image'
-import fs from '@ohos.file.fs'
+import { promptAction } from '@kit.ArkUI'
+import { photoAccessHelper } from '@kit.MediaLibraryKit'
+import { image } from '@kit.ImageKit'
+import { fileIo } from '@kit.CoreFileKit'
+
+// 自定义错误类型
+interface ErrorWithCode {
+  code?: number | string
+  message?: string
+}
 
 
 @Entry
 @Component
 struct Index {
-  // 画布状态（
+  // 画布状态
   @State pixelMap?: image.PixelMap = undefined
   @State zoom: number = 1.0
   @State offsetX: number = 0
@@ -35,7 +41,6 @@ struct Index {
           Image(this.pixelMap)
             .objectFit(ImageFit.Contain)
             .width('100%').height('100%')
-          // === 若你保留交互，这里别动 ===
         }
       }
       .width('100%')
@@ -48,14 +53,12 @@ struct Index {
 
       // 底部工具栏
       Row({ space: 10 }) {
-        // 左侧标题弱化，给按钮腾空间
         Text('鸿绘')
           .fontSize(16)
           .fontWeight(FontWeight.Medium)
           .fontColor('#6B7280')
           .layoutWeight(1)
 
-        // 按钮
         Button('打开图片', { type: ButtonType.Capsule })
           .height(40).padding({ left:14, right:14 })
           .onClick(() => this.pickImage())
@@ -82,77 +85,98 @@ struct Index {
     .padding(12)
   }
 
-
   private resetView() {
     this.zoom = 1.0
     this.offsetX = 0
     this.offsetY = 0
   }
 
-  // 打开图片
+  // 打开图片（
   private async pickImage() {
     try {
-      const picker = new filePicker.PhotoViewPicker()
-      const res = await picker.select({ maxSelectNumber: 1 })
+      // 选图
+      const picker = new photoAccessHelper.PhotoViewPicker()
+      const options = new photoAccessHelper.PhotoSelectOptions()
+      // 只选择图片
+      options.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE
+      // 一次最多选一张
+      options.maxSelectNumber = 1
 
-      if (!res || !res.photoUris || res.photoUris.length === 0) {
+      // 等待用户选择图片并拿去结果
+      const result = await picker.select(options)
+      const uris: Array<string> = result.photoUris
+
+      // 用户未选择图片提示
+      if (!uris || uris.length === 0) {
         promptAction.showToast({ message: '未选择图片' })
         return
       }
 
-      const uri = res.photoUris[0]
+      const uri: string = uris[0]
       console.info(`>>> Selected URI = ${uri}`)
 
-      let pm: image.PixelMap
+      // 2. 用 fileIo 打开 uri，拿 fd
+      const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY)
 
-      if (uri.startsWith('datashare://')) {
-        const fdObj = fs.openSync(uri, fs.OpenMode.READ_ONLY)
-        const fd = fdObj.fd
-        const src = image.createImageSource(fd)
-        pm = await src.createPixelMap({})
-        src.release?.()
-        fs.closeSync(fdObj)
-      } else {
-        const src = image.createImageSource(uri)
-        pm = await src.createPixelMap({})
-        src.release?.()
+      // 3. 创建 ImageSource
+      const imgSource: image.ImageSource = image.createImageSource(file.fd)
+      if (!imgSource) {
+        await fileIo.close(file)
+        throw new Error('createImageSource 返回空')
       }
 
+      // 4. 从 ImageSource 创建 PixelMap
+      const pm: image.PixelMap = await imgSource.createPixelMap({
+        editable: true
+      })
+
+      // 5. 释放底层资源
+      imgSource.release?.()
+      await fileIo.close(file)
+
+      // 6. 更新 UI 状态
+      if (this.pixelMap) {
+        this.pixelMap.release?.()
+      }
       this.pixelMap = pm
       this.resetView()
-      promptAction.showToast({ message: '图片已加载 ✅' })
 
+      promptAction.showToast({ message: '图片已加载 ✅' })
     } catch (err) {
       let code = 'NA'
       let message = 'unknown'
 
       if (typeof err === 'object' && err !== null) {
-        // ArkTS 严格模式下兼容访问错误属性
-        code = err.code !== undefined ? String(err.code) : code
-        message = err.message !== undefined ? String(err.message) : message
+        const e = err as ErrorWithCode
+
+        if (e.code !== undefined) {
+          code = String(e.code)
+        }
+        if (e.message !== undefined) {
+          message = String(e.message)
+        }
       } else {
         message = String(err)
       }
 
       const msg = `code=${code} msg=${message}`
       console.error(`[pickImage] failed: ${msg}`)
-      console.log(msg)
       promptAction.showToast({ message: `打开失败：${msg}` })
     }
   }
 
-  // 保存图片
+  // === 保存图片（占位实现）===
   private async saveImage() {
     try {
       if (!this.pixelMap) {
         promptAction.showToast({ message: '请先打开图片' })
         return
       }
-      // TODO: 保存逻辑
+      // TODO：这里后续接入导出/保存逻辑
       promptAction.showToast({ message: '保存功能即将接入' })
     } catch (err) {
-      promptAction.showToast({ message: '保存失败' })
       console.error('saveImage error', err)
+      promptAction.showToast({ message: '保存失败' })
     }
   }
 }
