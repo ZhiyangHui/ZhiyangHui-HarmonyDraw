@@ -112,36 +112,37 @@ struct Index {
         return
       }
 
+      // 得到图片地址
       const uri: string = uris[0]
       console.info(`>>> Selected URI = ${uri}`)
 
-      // 2. 用 fileIo 打开 uri，拿 fd
+      // 用 fileIo 打开 uri，拿 fd
       const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY)
 
-      // 3. 创建 ImageSource
+      // 把 fd 交给 ImageKit 解码 → 得到 ImageSource
       const imgSource: image.ImageSource = image.createImageSource(file.fd)
       if (!imgSource) {
         await fileIo.close(file)
         throw new Error('createImageSource 返回空')
       }
 
-      // 4. 从 ImageSource 创建 PixelMap
+      // 从 ImageSource 创建 PixelMap
       const pm: image.PixelMap = await imgSource.createPixelMap({
         editable: true
       })
 
-      // 5. 释放底层资源
+      // 释放底层资源
       imgSource.release?.()
       await fileIo.close(file)
 
-      // 6. 更新 UI 状态
+      // 更新 UI 状态
       if (this.pixelMap) {
         this.pixelMap.release?.()
       }
       this.pixelMap = pm
       this.resetView()
 
-      promptAction.showToast({ message: '图片已加载 ✅' })
+      promptAction.showToast({ message: '图片已加载 ' })
     } catch (err) {
       let code = 'NA'
       let message = 'unknown'
@@ -165,7 +166,7 @@ struct Index {
     }
   }
 
-  // === 保存图片（占位实现）===
+  // 保存图片（占位实现
   private async saveImage() {
     try {
       if (!this.pixelMap) {
