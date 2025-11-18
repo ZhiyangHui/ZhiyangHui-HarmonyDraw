@@ -2,6 +2,9 @@ import { promptAction } from '@kit.ArkUI'
 import { photoAccessHelper } from '@kit.MediaLibraryKit'
 import { image } from '@kit.ImageKit'
 import { fileIo } from '@kit.CoreFileKit'
+import { common } from '@kit.AbilityKit'
+import { BusinessError } from '@kit.BasicServicesKit'
+
 
 // 自定义错误类型
 interface ErrorWithCode {
@@ -63,9 +66,21 @@ struct Index {
           .height(40).padding({ left:14, right:14 })
           .onClick(() => this.pickImage())
 
-        Button('保存', { type: ButtonType.Capsule })
-          .height(40).padding({ left:14, right:14 })
-          .onClick(() => this.saveImage())
+        SaveButton({
+          icon: SaveIconStyle.FULL_FILLED,
+          text: SaveDescription.SAVE_IMAGE,
+          buttonType: ButtonType.Capsule
+        })
+          .height(40)
+          .padding({ left: 14, right: 14 })
+          .onClick(async (event, result: SaveButtonOnClickResult) => {
+            if (result === SaveButtonOnClickResult.SUCCESS) {
+              // 用户点了保存按钮，系统临时授予相册写入权限（约 5 秒）
+              await this.saveImage()
+            } else {
+              promptAction.showToast({ message: '授权失败，无法保存' })
+            }
+          })
 
         Button('重置', { type: ButtonType.Capsule })
           .height(40).padding({ left:14, right:14 })
@@ -166,17 +181,64 @@ struct Index {
     }
   }
 
-  // 保存图片（占位实现
+  // 保存图片：把当前 PixelMap 写入系统相册
   private async saveImage() {
     try {
+      // 判空
       if (!this.pixelMap) {
         promptAction.showToast({ message: '请先打开图片' })
         return
       }
-      // TODO：这里后续接入导出/保存逻辑
-      promptAction.showToast({ message: '保存功能即将接入' })
+
+      // 拿到上下文
+      const context = getContext(this) as common.UIAbilityContext
+
+      // 获取 PhotoAccessHelper
+      const helper = photoAccessHelper.getPhotoAccessHelper(context)
+
+      // 通过 createAsset 在系统相册中新建一个图片文件
+      const uri: string = await helper.createAsset(
+        photoAccessHelper.PhotoType.IMAGE,
+        'jpg'
+      )
+
+      // 用 fileIo 打开这个 uri，拿到可写的 fd
+      const file = await fileIo.open(
+        uri,
+        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE
+      )
+
+      // 用 ImagePacker 把 PixelMap 直接打包进这个文件
+      const packer = image.createImagePacker()
+      const packOpts: image.PackingOption = {
+        format: 'image/jpeg',
+        quality: 90
+      }
+
+      // 把 PixelMap 的数据写入到打开的那个文件 fd 里
+      await new Promise<void>((resolve, reject) => {
+        packer.packToFile(
+          this.pixelMap as image.PixelMap,
+          file.fd,
+          packOpts,
+          (err: BusinessError) => {
+            if (err) {
+              reject(err)
+            } else {
+              resolve()
+            }
+          }
+        )
+      })
+
+      // 释放资源
+      packer.release?.()
+      await fileIo.close(file)
+
+      promptAction.showToast({ message: '已保存到相册 ' })
     } catch (err) {
-      console.error('saveImage error', err)
+      const e = err as BusinessError
+      console.error(`saveImage failed, code=${e?.code}, msg=${e?.message}`)
       promptAction.showToast({ message: '保存失败' })
     }
   }

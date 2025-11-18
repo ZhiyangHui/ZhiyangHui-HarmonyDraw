@@ -28,7 +28,7 @@
           "abilities": ["EntryAbility"],
           "when": "inuse"
         }
-      }
+      },
     ],
     "abilities": [
       {
