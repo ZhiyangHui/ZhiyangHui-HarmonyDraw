@@ -22,9 +22,11 @@ struct Index {
   @State offsetX: number = 0
   @State offsetY: number = 0
 
+
   // 手势内部状态
   private lastPanX: number = 0
   private lastPanY: number = 0
+  private lastZoom: number = 1.0
 
   build() {
     Column() {
@@ -43,7 +45,59 @@ struct Index {
         } else {
           Image(this.pixelMap)
             .objectFit(ImageFit.Contain)
-            .width('100%').height('100%')
+            .width('100%')
+            .height('100%')
+
+            // 按 zoom 缩放
+            .scale({
+              x: this.zoom,
+              y: this.zoom,
+              z: 1.0
+            })
+
+            // 按 offsetX / offsetY 平移，实现滚动/拖动
+            .translate({
+              x: this.offsetX,
+              y: this.offsetY
+            })
+
+            // 手势：拖动 + 双指缩放，可以同时工作
+            .gesture(
+              GestureGroup(GestureMode.Parallel,
+
+                // 拖动
+                PanGesture({ direction: PanDirection.All, distance: 1 })
+                  .onActionStart(event => {
+                    // 记录拖动开始时的偏移量
+                    this.lastPanX = this.offsetX
+                    this.lastPanY = this.offsetY
+                  })
+                  .onActionUpdate(event => {
+                    // event.offsetX / offsetY 是本次手势相对位移
+                    this.offsetX = this.lastPanX + event.offsetX
+                    this.offsetY = this.lastPanY + event.offsetY
+                  }),
+
+                // 双指缩放
+                PinchGesture()
+                  .onActionStart(event => {
+                    // 记录缩放开始时的 zoom
+                    this.lastZoom = this.zoom
+                  })
+                  .onActionUpdate(event => {
+                    // event.scale 是这次手势的缩放比例
+                    let next = this.lastZoom * event.scale
+
+                    // 做一下限制，避免无限缩放
+                    const MIN_ZOOM = 0.3
+                    const MAX_ZOOM = 5.0
+                    if (next < MIN_ZOOM) next = MIN_ZOOM
+                    if (next > MAX_ZOOM) next = MAX_ZOOM
+
+                    this.zoom = next
+                  })
+              )
+            )
         }
       }
       .width('100%')
@@ -96,7 +150,7 @@ struct Index {
 
     }
     .width('100%').height('100%')
-    .backgroundColor('#F2F4F7')
+    .backgroundColor('#FFFFFF')
     .padding(12)
   }
 
