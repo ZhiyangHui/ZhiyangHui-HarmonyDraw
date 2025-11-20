@@ -24,7 +24,8 @@ struct Index {
   @State pixelVersion: number = 0
 
   // 旋转中标志，防止连点导致两次右旋
-  private isRotating: boolean = false   // <<<—— 就是它
+  private isRotating: boolean = false
+  private accumulatedRotate: number = 0 // 之前旋转的总度数
 
   // 旋转 / 亮度 / 对比度
   @State rotateDeg: number = 0 // 旋转角度
@@ -205,11 +206,49 @@ struct Index {
     .padding(12)
   }
 
-  private resetView() {
+  private async resetView() {
+    // 重置视图参数（缩放 / 平移）
     this.zoom = 1.0
     this.offsetX = 0
     this.offsetY = 0
+
+    // 没图片就啥也不干
+    if (!this.pixelMap) {
+      this.accumulatedRotate = 0
+      return
+    }
+
+    // 本来就没旋转过，直接返回
+    if (this.accumulatedRotate === 0) {
+      return
+    }
+
+    // 正在旋转就先不抢，避免打架
+    if (this.isRotating) {
+      return
+    }
+
+    // 算出旋回去的角度
+    const back = (360 - this.accumulatedRotate) % 360
+    if (back === 0) {
+      this.accumulatedRotate = 0
+      return
+    }
+
+    try {
+      this.isRotating = true
+      await (this.pixelMap as image.PixelMap).rotate(back)
+      this.pixelVersion++
+      this.accumulatedRotate = 0
+    } catch (err) {
+      const e = err as ErrorWithCode
+      console.error(`resetView rotateBack failed, code=${e?.code}, msg=${e?.message}`)
+      promptAction.showToast({ message: '重置图片失败' })
+    } finally {
+      this.isRotating = false
+    }
   }
+
 
   // 打开图片（
   private async pickImage() {
@@ -353,23 +392,24 @@ struct Index {
     // 什么都不做
   }
 
-  // 向右旋转90度（顺时针）
+  // 向右旋转 90 度（顺时针）
   private async rotateRight90() {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
       return
     }
     if (this.isRotating) {
-      // 正在旋转中，直接丢掉这次点击，避免叠加
       return
     }
 
     this.isRotating = true
     try {
-      // 等待旋转完成
       await (this.pixelMap as image.PixelMap).rotate(90)
+
+      // 这里记录累计旋转
+      this.accumulatedRotate = (this.accumulatedRotate + 90) % 360
+
       this.pixelVersion++
-      this.resetView()
     } catch (err) {
       const e = err as ErrorWithCode
       console.error(`rotateRight90 failed, code=${e?.code}, msg=${e?.message}`)
@@ -379,7 +419,8 @@ struct Index {
     }
   }
 
-  // 向左旋转90度（逆时针）
+
+  // 向左旋转 90 度（逆时针）
   private async rotateLeft90() {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
@@ -391,10 +432,13 @@ struct Index {
 
     this.isRotating = true
     try {
-      // 用顺时针 270° 代替 -90°
+      // 实际对 PixelMap 做顺时针 270°（等价于逆时针 90°）
       await (this.pixelMap as image.PixelMap).rotate(270)
+
+      // 累计角度也加上 270°
+      this.accumulatedRotate = (this.accumulatedRotate + 270) % 360
+
       this.pixelVersion++
-      this.resetView()
     } catch (err) {
       const e = err as ErrorWithCode
       console.error(`rotateLeft90 failed, code=${e?.code}, msg=${e?.message}`)
@@ -403,13 +447,6 @@ struct Index {
       this.isRotating = false
     }
   }
-
-
-
-
-
-
-
 
 
   // 调整亮度
