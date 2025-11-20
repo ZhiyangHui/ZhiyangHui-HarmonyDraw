@@ -21,7 +21,15 @@ struct Index {
   @State zoom: number = 1.0
   @State offsetX: number = 0
   @State offsetY: number = 0
+  @State pixelVersion: number = 0
 
+  // 旋转中标志，防止连点导致两次右旋
+  private isRotating: boolean = false   // <<<—— 就是它
+
+  // 旋转 / 亮度 / 对比度
+  @State rotateDeg: number = 0 // 旋转角度
+  // @State brightness: number = 0.0       // -1.0 ~ 1.0
+  // @State contrast: number = 0.0         // -1.0 ~ 1.0
 
   // 手势内部状态
   private lastPanX: number = 0
@@ -30,6 +38,46 @@ struct Index {
 
   build() {
     Column() {
+      // 顶部工具栏
+      Column() {
+        Row({ space: 8 }) {
+
+          Button('裁剪', { type: ButtonType.Capsule })
+            .height(32)
+            .fontSize(12)
+            .onClick(() => this.cropCenter()) // 空壳函数
+
+          // —— 按钮：左旋 90°
+          Button('左旋90°', { type: ButtonType.Capsule })
+            .height(32)
+            .fontSize(12)
+            .onClick(() => this.rotateLeft90()) // 空壳函数
+
+          // —— 按钮：右旋 90°
+          Button('右旋90°', { type: ButtonType.Capsule })
+            .height(32)
+            .fontSize(12)
+            .onClick(() => this.rotateRight90()) // 空壳函数
+
+
+          Button('变亮', { type: ButtonType.Capsule })
+            .height(32)
+            .fontSize(12)
+            .onClick(() => this.adjustBrightness(0.1)) // 空壳
+
+          Button('变暗', { type: ButtonType.Capsule })
+            .height(32)
+            .fontSize(12)
+            .onClick(() => this.adjustBrightness(-0.1)) // 空壳
+
+
+        }
+        .width('100%')
+        .padding({ left: 4, right: 4, bottom: 8 })
+        .justifyContent(FlexAlign.Start)
+      }
+
+
       // 画布
       Stack() {
         if (!this.pixelMap) {
@@ -43,37 +91,38 @@ struct Index {
           .justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
         } else {
+
+          // =============================
+          // 1) 图片渲染层（无手势，纯展示）
+          // =============================
           Image(this.pixelMap)
+            .id(`img-${this.pixelVersion}`)
             .objectFit(ImageFit.Contain)
             .width('100%')
             .height('100%')
+            .scale({ x: this.zoom, y: this.zoom })
+            .translate({ x: this.offsetX, y: this.offsetY })
 
-            // 按 zoom 缩放
-            .scale({
-              x: this.zoom,
-              y: this.zoom,
-              z: 1.0
-            })
 
-            // 按 offsetX / offsetY 平移，实现滚动/拖动
-            .translate({
-              x: this.offsetX,
-              y: this.offsetY
-            })
-
-            // 手势：拖动 + 双指缩放，可以同时工作
+          // =============================
+          // 2) 透明手势捕获层（只接收手势，不挡按钮）
+          // =============================
+          Stack()
+            .width('100%')
+            .height('100%')
+            .backgroundColor(Color.Transparent)   // 全透明
+            .hitTestBehavior(HitTestMode.Transparent)
+            // ⬆ 关键：不阻挡点击事件，只接收手势
             .gesture(
               GestureGroup(GestureMode.Parallel,
 
                 // 拖动
-                PanGesture({ direction: PanDirection.All, distance: 1 })
+                PanGesture({ direction: PanDirection.All, distance: 2 })
                   .onActionStart(event => {
-                    // 记录拖动开始时的偏移量
                     this.lastPanX = this.offsetX
                     this.lastPanY = this.offsetY
                   })
                   .onActionUpdate(event => {
-                    // event.offsetX / offsetY 是本次手势相对位移
                     this.offsetX = this.lastPanX + event.offsetX
                     this.offsetY = this.lastPanY + event.offsetY
                   }),
@@ -81,19 +130,14 @@ struct Index {
                 // 双指缩放
                 PinchGesture()
                   .onActionStart(event => {
-                    // 记录缩放开始时的 zoom
                     this.lastZoom = this.zoom
                   })
                   .onActionUpdate(event => {
-                    // event.scale 是这次手势的缩放比例
                     let next = this.lastZoom * event.scale
-
-                    // 做一下限制，避免无限缩放
                     const MIN_ZOOM = 0.3
                     const MAX_ZOOM = 5.0
                     if (next < MIN_ZOOM) next = MIN_ZOOM
                     if (next > MAX_ZOOM) next = MAX_ZOOM
-
                     this.zoom = next
                   })
               )
@@ -104,9 +148,10 @@ struct Index {
       .layoutWeight(1)
       .backgroundColor('#FFFFFF')
       .borderRadius(12)
-      .shadow({ radius: 16, color:'#1A000000', offsetY: 2 })
+      .shadow({ radius: 16, color: '#1A000000', offsetY: 2 })
       .padding(2)
       .clip(true)
+
 
       // 底部工具栏
       Row({ space: 10 }) {
@@ -117,7 +162,7 @@ struct Index {
           .layoutWeight(1)
 
         Button('打开图片', { type: ButtonType.Capsule })
-          .height(40).padding({ left:14, right:14 })
+          .height(40).padding({ left: 14, right: 14 })
           .onClick(() => this.pickImage())
 
         SaveButton({
@@ -137,13 +182,19 @@ struct Index {
           })
 
         Button('重置', { type: ButtonType.Capsule })
-          .height(40).padding({ left:14, right:14 })
+          .height(40)
+          .padding({ left: 14, right: 14 })
           .backgroundColor('#EEF2FF')
           .fontColor('#3B82F6')
           .onClick(() => this.resetView())
       }
       .width('100%')
-      .padding({ left: 12, right: 12, top: 10, bottom: 0 })
+      .padding({
+        left: 12,
+        right: 12,
+        top: 10,
+        bottom: 0
+      })
       .backgroundColor('#F7F8FA')
       .border({ width: { top: 0.5 }, color: '#E5E7EB' })
       .alignItems(VerticalAlign.Center)
@@ -296,4 +347,76 @@ struct Index {
       promptAction.showToast({ message: '保存失败' })
     }
   }
+
+  // 裁剪
+  private cropCenter() {
+    // 什么都不做
+  }
+
+  // 向右旋转90度（顺时针）
+  private async rotateRight90() {
+    if (!this.pixelMap) {
+      promptAction.showToast({ message: '请先打开图片' })
+      return
+    }
+    if (this.isRotating) {
+      // 正在旋转中，直接丢掉这次点击，避免叠加
+      return
+    }
+
+    this.isRotating = true
+    try {
+      // 等待旋转完成
+      await (this.pixelMap as image.PixelMap).rotate(90)
+      this.pixelVersion++
+      this.resetView()
+    } catch (err) {
+      const e = err as ErrorWithCode
+      console.error(`rotateRight90 failed, code=${e?.code}, msg=${e?.message}`)
+      promptAction.showToast({ message: '右旋失败' })
+    } finally {
+      this.isRotating = false
+    }
+  }
+
+  // 向左旋转90度（逆时针）
+  private async rotateLeft90() {
+    if (!this.pixelMap) {
+      promptAction.showToast({ message: '请先打开图片' })
+      return
+    }
+    if (this.isRotating) {
+      return
+    }
+
+    this.isRotating = true
+    try {
+      // 用顺时针 270° 代替 -90°
+      await (this.pixelMap as image.PixelMap).rotate(270)
+      this.pixelVersion++
+      this.resetView()
+    } catch (err) {
+      const e = err as ErrorWithCode
+      console.error(`rotateLeft90 failed, code=${e?.code}, msg=${e?.message}`)
+      promptAction.showToast({ message: '左旋失败' })
+    } finally {
+      this.isRotating = false
+    }
+  }
+
+
+
+
+
+
+
+
+
+  // 调整亮度
+  private adjustBrightness(delta: number) {
+
+  }
+
+
+
 }
