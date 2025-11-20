@@ -22,11 +22,9 @@ struct Index {
   @State offsetX: number = 0
   @State offsetY: number = 0
   @State pixelVersion: number = 0
-
   // 旋转中标志，防止连点导致两次右旋
   private isRotating: boolean = false
   private accumulatedRotate: number = 0 // 之前旋转的总度数
-
   // 旋转 / 亮度 / 对比度
   @State rotateDeg: number = 0 // 旋转角度
   // @State brightness: number = 0.0       // -1.0 ~ 1.0
@@ -137,8 +135,12 @@ struct Index {
                     let next = this.lastZoom * event.scale
                     const MIN_ZOOM = 0.3
                     const MAX_ZOOM = 5.0
-                    if (next < MIN_ZOOM) next = MIN_ZOOM
-                    if (next > MAX_ZOOM) next = MAX_ZOOM
+                    if (next < MIN_ZOOM) {
+                      next = MIN_ZOOM
+                    }
+                    if (next > MAX_ZOOM) {
+                      next = MAX_ZOOM
+                    }
                     this.zoom = next
                   })
               )
@@ -248,7 +250,6 @@ struct Index {
       this.isRotating = false
     }
   }
-
 
   // 打开图片（
   private async pickImage() {
@@ -419,7 +420,6 @@ struct Index {
     }
   }
 
-
   // 向左旋转 90 度（逆时针）
   private async rotateLeft90() {
     if (!this.pixelMap) {
@@ -448,12 +448,69 @@ struct Index {
     }
   }
 
-
   // 调整亮度
-  private adjustBrightness(delta: number) {
+  // 调整亮度：delta > 0 变亮，delta < 0 变暗
+  private async adjustBrightness(delta: number) {
+    if (!this.pixelMap) {
+      promptAction.showToast({ message: '请先打开图片' })
+      return
+    }
 
+    try {
+      const pm = this.pixelMap as image.PixelMap
+
+      // 1. 拿到像素总字节数
+      const byteLength: number = pm.getPixelBytesNumber()
+
+      if (byteLength <= 0) {
+        console.error('[adjustBrightness] invalid byteLength:', byteLength)
+        return
+      }
+
+      // 2. 准备一个 ArrayBuffer 接收像素
+      const buffer = new ArrayBuffer(byteLength)
+
+      // 3. 把 PixelMap 的数据读到 buffer
+      await pm.readPixelsToBuffer(buffer)
+
+      // 4. 在内存里调整亮度（BGRA_8888）
+      const data = new Uint8Array(buffer)
+
+      // 亮度系数（例如 delta = 0.1 => 1.1，delta = -0.2 => 0.8）
+      const factor = 1 + delta
+
+      // 避免每次都做边界判断太多，可以先处理一下 factor 的范围
+      // 比如限定在 [0, 3] 之间，防止溢出太狠
+      const k = Math.max(0, Math.min(3, factor))
+
+      // i: 像素下标，每次+4（B、G、R、A）
+      for (let i = 0; i < data.length; i += 4) {
+        // 通道 0/1/2 分别是 B、G、R，A 通道不动
+        // 展开循环，避免内层 for 带来的额外开销
+        let b = data[i]
+        let g = data[i + 1]
+        let r = data[i + 2]
+
+        b = b * k
+        g = g * k
+        r = r * k
+
+        // 手动 clamp
+        data[i] = b < 0 ? 0 : b > 255 ? 255 : b
+        data[i + 1] = g < 0 ? 0 : g > 255 ? 255 : g
+        data[i + 2] = r < 0 ? 0 : r > 255 ? 255 : r
+        // data[i + 3] 保持不变（alpha）
+      }
+
+      // 5. 把修改后的 buffer 写回 PixelMap
+      await pm.writeBufferToPixels(buffer)
+
+      // 6. 通知 UI 刷新
+      this.pixelVersion++
+    } catch (err) {
+      const e = err as ErrorWithCode
+      console.error(`adjustBrightness failed, code=${e?.code}, msg=${e?.message}`)
+      promptAction.showToast({ message: '亮度调整失败' })
+    }
   }
-
-
-
 }
