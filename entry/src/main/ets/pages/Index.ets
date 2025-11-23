@@ -4,12 +4,21 @@ import { image } from '@kit.ImageKit'
 import { fileIo } from '@kit.CoreFileKit'
 import { common } from '@kit.AbilityKit'
 import { BusinessError } from '@kit.BasicServicesKit'
+import { effectKit } from '@kit.ArkGraphics2D'
 
 
 // 自定义错误类型
 interface ErrorWithCode {
   code?: number | string
   message?: string
+}
+
+
+interface BrightnessStateHolder {
+  _baseBuf?: ArrayBuffer // 原始像素（当前图的“基准图像”）
+  _baseInfo?: image.ImageInfo // 原始图信息
+  _brightnessLevel?: number // 当前亮度等级（累积值）
+  _basePixelVersion?: number // 缓存时对应的 pixelVersion
 }
 
 
@@ -27,7 +36,7 @@ struct Index {
   private accumulatedRotate: number = 0 // 之前旋转的总度数
   // 旋转 / 亮度 / 对比度
   @State rotateDeg: number = 0 // 旋转角度
-  // @State brightness: number = 0.0       // -1.0 ~ 1.0
+  @State brightnessLevel: number = 0.0 // -0.5 ~ 0.5 左右，0 是原图
   // @State contrast: number = 0.0         // -1.0 ~ 1.0
 
   // 手势内部状态
@@ -62,12 +71,12 @@ struct Index {
           Button('变亮', { type: ButtonType.Capsule })
             .height(32)
             .fontSize(12)
-            .onClick(() => this.adjustBrightness(0.1)) // 空壳
+            .onClick(() => this.adjustBrightness(0.05)) // 空壳
 
           Button('变暗', { type: ButtonType.Capsule })
             .height(32)
             .fontSize(12)
-            .onClick(() => this.adjustBrightness(-0.1)) // 空壳
+            .onClick(() => this.adjustBrightness(-0.05)) // 空壳
 
 
         }
@@ -101,6 +110,7 @@ struct Index {
             .height('100%')
             .scale({ x: this.zoom, y: this.zoom })
             .translate({ x: this.offsetX, y: this.offsetY })
+            .colorFilter(this.buildBrightnessMatrix())
 
 
           // =============================
@@ -196,7 +206,7 @@ struct Index {
         left: 12,
         right: 12,
         top: 10,
-        bottom: 0
+        bottom: 10
       })
       .backgroundColor('#F7F8FA')
       .border({ width: { top: 0.5 }, color: '#E5E7EB' })
@@ -218,6 +228,11 @@ struct Index {
     if (!this.pixelMap) {
       this.accumulatedRotate = 0
       return
+    }
+
+    // 重置亮度到默认值（显示回“原图亮度”）
+    if (this.brightnessLevel !== 0) {
+      this.brightnessLevel = 0.0
     }
 
     // 本来就没旋转过，直接返回
@@ -329,54 +344,44 @@ struct Index {
   // 保存图片：把当前 PixelMap 写入系统相册
   private async saveImage() {
     try {
-      // 判空
       if (!this.pixelMap) {
         promptAction.showToast({ message: '请先打开图片' })
         return
       }
 
-      // 拿到上下文
       const context = getContext(this) as common.UIAbilityContext
-
-      // 获取 PhotoAccessHelper
       const helper = photoAccessHelper.getPhotoAccessHelper(context)
 
-      // 通过 createAsset 在系统相册中新建一个图片文件
+      // 保存前把亮度真正写进像素
+      const pm: image.PixelMap = this.pixelMap as image.PixelMap
+      await this.bakeBrightnessToPixelMap(pm)
+
+      // 下面保持原来的保存逻辑不变，用 pm 保存
       const uri: string = await helper.createAsset(
         photoAccessHelper.PhotoType.IMAGE,
         'jpg'
       )
 
-      // 用 fileIo 打开这个 uri，拿到可写的 fd
       const file = await fileIo.open(
         uri,
         fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE
       )
 
-      // 用 ImagePacker 把 PixelMap 直接打包进这个文件
       const packer = image.createImagePacker()
       const packOpts: image.PackingOption = {
         format: 'image/jpeg',
         quality: 90
       }
 
-      // 把 PixelMap 的数据写入到打开的那个文件 fd 里
       await new Promise<void>((resolve, reject) => {
         packer.packToFile(
-          this.pixelMap as image.PixelMap,
+          pm, // ← 用已经烘焙亮度后的 pixelMap
           file.fd,
           packOpts,
-          (err: BusinessError) => {
-            if (err) {
-              reject(err)
-            } else {
-              resolve()
-            }
-          }
+          (err: BusinessError) => err ? reject(err) : resolve()
         )
       })
 
-      // 释放资源
       packer.release?.()
       await fileIo.close(file)
 
@@ -448,69 +453,117 @@ struct Index {
     }
   }
 
-  // 调整亮度
-  // 调整亮度：delta > 0 变亮，delta < 0 变暗
   private async adjustBrightness(delta: number) {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
       return
     }
 
-    try {
-      const pm = this.pixelMap as image.PixelMap
+    // brightnessLevel 取一个相对温和的区间，防止崩坏
+    this.brightnessLevel += delta
 
-      // 1. 拿到像素总字节数
-      const byteLength: number = pm.getPixelBytesNumber()
+    const MAX_LEVEL: number = 0.5 // 大约 +128
+    const MIN_LEVEL: number = -0.5 // 大约 -128
 
-      if (byteLength <= 0) {
-        console.error('[adjustBrightness] invalid byteLength:', byteLength)
-        return
-      }
-
-      // 2. 准备一个 ArrayBuffer 接收像素
-      const buffer = new ArrayBuffer(byteLength)
-
-      // 3. 把 PixelMap 的数据读到 buffer
-      await pm.readPixelsToBuffer(buffer)
-
-      // 4. 在内存里调整亮度（BGRA_8888）
-      const data = new Uint8Array(buffer)
-
-      // 亮度系数（例如 delta = 0.1 => 1.1，delta = -0.2 => 0.8）
-      const factor = 1 + delta
-
-      // 避免每次都做边界判断太多，可以先处理一下 factor 的范围
-      // 比如限定在 [0, 3] 之间，防止溢出太狠
-      const k = Math.max(0, Math.min(3, factor))
-
-      // i: 像素下标，每次+4（B、G、R、A）
-      for (let i = 0; i < data.length; i += 4) {
-        // 通道 0/1/2 分别是 B、G、R，A 通道不动
-        // 展开循环，避免内层 for 带来的额外开销
-        let b = data[i]
-        let g = data[i + 1]
-        let r = data[i + 2]
-
-        b = b * k
-        g = g * k
-        r = r * k
-
-        // 手动 clamp
-        data[i] = b < 0 ? 0 : b > 255 ? 255 : b
-        data[i + 1] = g < 0 ? 0 : g > 255 ? 255 : g
-        data[i + 2] = r < 0 ? 0 : r > 255 ? 255 : r
-        // data[i + 3] 保持不变（alpha）
-      }
-
-      // 5. 把修改后的 buffer 写回 PixelMap
-      await pm.writeBufferToPixels(buffer)
-
-      // 6. 通知 UI 刷新
-      this.pixelVersion++
-    } catch (err) {
-      const e = err as ErrorWithCode
-      console.error(`adjustBrightness failed, code=${e?.code}, msg=${e?.message}`)
-      promptAction.showToast({ message: '亮度调整失败' })
+    if (this.brightnessLevel > MAX_LEVEL) {
+      this.brightnessLevel = MAX_LEVEL
     }
+    if (this.brightnessLevel < MIN_LEVEL) {
+      this.brightnessLevel = MIN_LEVEL
+    }
+  }
+
+  // 构建亮度矩阵
+  private buildBrightnessMatrix(): Array<number> {
+    const b: number = this.brightnessLevel; // 建议范围 [-0.5, 0.5]
+
+    return [
+      1, 0, 0, 0, b,
+      0, 1, 0, 0, b,
+      0, 0, 1, 0, b,
+      0, 0, 0, 1, 0
+    ]
+  }
+
+  // 把当前 brightnessLevel 烘焙到 pixelMap 里（只在保存前调用）注意：调用后会把 brightnessLevel 归零，并触发一次刷新
+  private async bakeBrightnessToPixelMap(pm: image.PixelMap): Promise<void> {
+    // 没有调整亮度就不用动像素，直接返回
+    if (this.brightnessLevel === 0) {
+      return
+    }
+
+    // 读出像素数据
+    const info: image.ImageInfo = await pm.getImageInfo()
+    const byteLength: number = pm.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await pm.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    // 判断通道顺序，防止颜色错乱
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (info.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        // B G R A
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        // A R G B
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+      // R G B A
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    // 根据 brightnessLevel 计算偏移量
+    const shift: number = this.brightnessLevel * 255
+
+    const clamp = (v: number): number => {
+      if (v < 0) {
+        return 0
+      }
+      if (v > 255) {
+        return 255
+      }
+      return v
+    }
+
+    // 遍历一次像素，真正改掉 R/G/B 通道
+    for (let i: number = 0; i < data.length; i += 4) {
+      const rIndex: number = i + rOffset
+      const gIndex: number = i + gOffset
+      const bIndex: number = i + bOffset
+      const aIndex: number = i + aOffset
+
+      data[rIndex] = clamp(data[rIndex] + shift)
+      data[gIndex] = clamp(data[gIndex] + shift)
+      data[bIndex] = clamp(data[bIndex] + shift)
+      // alpha 原样保持
+      data[aIndex] = data[aIndex]
+    }
+
+    // 把修改后的像素写回 pixelMap
+    await pm.writeBufferToPixels(buffer)
+
+    // 把状态亮度归零：此时底层像素已经是“新亮度”，
+    //    再把 colorFilter 的 brightnessLevel 设回 0，
+    //    视觉效果保持不变（不会叠加两次亮度）
+    this.brightnessLevel = 0.0
+    this.pixelVersion++ // 触发 Image 重新渲染一次
   }
 }
