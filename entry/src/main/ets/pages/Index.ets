@@ -14,14 +14,6 @@ interface ErrorWithCode {
 }
 
 
-interface BrightnessStateHolder {
-  _baseBuf?: ArrayBuffer // 原始像素（当前图的“基准图像”）
-  _baseInfo?: image.ImageInfo // 原始图信息
-  _brightnessLevel?: number // 当前亮度等级（累积值）
-  _basePixelVersion?: number // 缓存时对应的 pixelVersion
-}
-
-
 @Entry
 @Component
 struct Index {
@@ -31,13 +23,15 @@ struct Index {
   @State offsetX: number = 0
   @State offsetY: number = 0
   @State pixelVersion: number = 0
+
   // 旋转中标志，防止连点导致两次右旋
   private isRotating: boolean = false
   private accumulatedRotate: number = 0 // 之前旋转的总度数
+
   // 旋转 / 亮度 / 对比度
   @State rotateDeg: number = 0 // 旋转角度
   @State brightnessLevel: number = 0.0 // -0.5 ~ 0.5 左右，0 是原图
-  // @State contrast: number = 0.0         // -1.0 ~ 1.0
+  @State contrastLevel: number = 0.0   // -1.0 ~ 1.0（0 是原图对比度）
 
   // 手势内部状态
   private lastPanX: number = 0
@@ -48,174 +42,175 @@ struct Index {
     Column() {
       // 顶部工具栏
       Column() {
-        Row({ space: 8 }) {
+        Column() {
+          Scroll() {
+            Row({ space: 8 }) {
 
-          Button('裁剪', { type: ButtonType.Capsule })
-            .height(32)
-            .fontSize(12)
-            .onClick(() => this.cropCenter())
+              Button('对比度+', { type: ButtonType.Capsule })
+                .height(32)
+                .fontSize(12)
+                .onClick(() => this.adjustContrast(0.1))
 
-          // —— 按钮：左旋 90°
-          Button('左旋90°', { type: ButtonType.Capsule })
-            .height(32)
-            .fontSize(12)
-            .onClick(() => this.rotateLeft90())
+              Button('对比度-', { type: ButtonType.Capsule })
+                .height(32)
+                .fontSize(12)
+                .onClick(() => this.adjustContrast(-0.1))
 
-          // —— 按钮：右旋 90°
-          Button('右旋90°', { type: ButtonType.Capsule })
-            .height(32)
-            .fontSize(12)
-            .onClick(() => this.rotateRight90())
+              Button('左旋90°', { type: ButtonType.Capsule })
+                .height(32)
+                .fontSize(12)
+                .onClick(() => this.rotateLeft90())
+
+              Button('右旋90°', { type: ButtonType.Capsule })
+                .height(32)
+                .fontSize(12)
+                .onClick(() => this.rotateRight90())
+
+              Button('变亮', { type: ButtonType.Capsule })
+                .height(32)
+                .fontSize(12)
+                .onClick(() => this.adjustBrightness(0.05))
+
+              Button('变暗', { type: ButtonType.Capsule })
+                .height(32)
+                .fontSize(12)
+                .onClick(() => this.adjustBrightness(-0.05))
+            }
+            .height(38)
+          }
+          .scrollable(ScrollDirection.Horizontal)
+          .width('100%')
+          .padding({ left: 4, right: 4, bottom: 10 })
+        }
 
 
-          Button('变亮', { type: ButtonType.Capsule })
-            .height(32)
-            .fontSize(12)
-            .onClick(() => this.adjustBrightness(0.05))
+        // 画布
+        Stack() {
+          if (!this.pixelMap) {
+            Column() {
+              Text('点击“打开图片”开始编辑')
+                .fontSize(14)
+                .fontColor('#9AA1A8')
+                .letterSpacing(0.5)
+            }
+            .width('100%').height('100%')
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          } else {
 
-          Button('变暗', { type: ButtonType.Capsule })
-            .height(32)
-            .fontSize(12)
-            .onClick(() => this.adjustBrightness(-0.05))
+            // 图片渲染层（无手势，纯展示）
+            Image(this.pixelMap)
+              .id(`img-${this.pixelVersion}`)
+              .objectFit(ImageFit.Contain)
+              .width('100%')
+              .height('100%')
+              .scale({ x: this.zoom, y: this.zoom })
+              .translate({ x: this.offsetX, y: this.offsetY })
+              .colorFilter(this.buildToneMatrix())
 
 
+            // 透明手势捕获层（只接收手势，不挡按钮）
+            Stack()
+              .width('100%')
+              .height('100%')
+              .backgroundColor(Color.Transparent)   // 全透明
+              .hitTestBehavior(HitTestMode.Transparent)
+              .gesture(
+                GestureGroup(GestureMode.Parallel,
+
+                  // 拖动
+                  PanGesture({ direction: PanDirection.All, distance: 2 })
+                    .onActionStart(event => {
+                      this.lastPanX = this.offsetX
+                      this.lastPanY = this.offsetY
+                    })
+                    .onActionUpdate(event => {
+                      this.offsetX = this.lastPanX + event.offsetX
+                      this.offsetY = this.lastPanY + event.offsetY
+                    }),
+
+                  // 双指缩放
+                  PinchGesture()
+                    .onActionStart(event => {
+                      this.lastZoom = this.zoom
+                    })
+                    .onActionUpdate(event => {
+                      let next = this.lastZoom * event.scale
+                      const MIN_ZOOM = 0.3
+                      const MAX_ZOOM = 5.0
+                      if (next < MIN_ZOOM) {
+                        next = MIN_ZOOM
+                      }
+                      if (next > MAX_ZOOM) {
+                        next = MAX_ZOOM
+                      }
+                      this.zoom = next
+                    })
+                )
+              )
+          }
         }
         .width('100%')
-        .padding({ left: 4, right: 4, bottom: 8 })
-        .justifyContent(FlexAlign.Start)
-      }
+        .layoutWeight(1)
+        .backgroundColor('#FFFFFF')
+        .borderRadius(12)
+        .shadow({ radius: 16, color: '#1A000000', offsetY: 2 })
+        .padding(2)
+        .clip(true)
 
 
-      // 画布
-      Stack() {
-        if (!this.pixelMap) {
-          Column() {
-            Text('点击“打开图片”开始编辑')
-              .fontSize(14)
-              .fontColor('#9AA1A8')
-              .letterSpacing(0.5)
-          }
-          .width('100%').height('100%')
-          .justifyContent(FlexAlign.Center)
-          .alignItems(HorizontalAlign.Center)
-        } else {
+        // 底部工具栏
+        Row({ space: 10 }) {
+          Text('鸿绘')
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#6B7280')
+            .layoutWeight(1)
 
-          // =============================
-          // 1) 图片渲染层（无手势，纯展示）
-          // =============================
-          Image(this.pixelMap)
-            .id(`img-${this.pixelVersion}`)
-            .objectFit(ImageFit.Contain)
-            .width('100%')
-            .height('100%')
-            .scale({ x: this.zoom, y: this.zoom })
-            .translate({ x: this.offsetX, y: this.offsetY })
-            .colorFilter(this.buildBrightnessMatrix())
+          Button('打开图片', { type: ButtonType.Capsule })
+            .height(40).padding({ left: 14, right: 14 })
+            .onClick(() => this.pickImage())
 
-
-
-          // 透明手势捕获层（只接收手势，不挡按钮）
-          Stack()
-            .width('100%')
-            .height('100%')
-            .backgroundColor(Color.Transparent)   // 全透明
-            .hitTestBehavior(HitTestMode.Transparent)
-            .gesture(
-              GestureGroup(GestureMode.Parallel,
-
-                // 拖动
-                PanGesture({ direction: PanDirection.All, distance: 2 })
-                  .onActionStart(event => {
-                    this.lastPanX = this.offsetX
-                    this.lastPanY = this.offsetY
-                  })
-                  .onActionUpdate(event => {
-                    this.offsetX = this.lastPanX + event.offsetX
-                    this.offsetY = this.lastPanY + event.offsetY
-                  }),
-
-                // 双指缩放
-                PinchGesture()
-                  .onActionStart(event => {
-                    this.lastZoom = this.zoom
-                  })
-                  .onActionUpdate(event => {
-                    let next = this.lastZoom * event.scale
-                    const MIN_ZOOM = 0.3
-                    const MAX_ZOOM = 5.0
-                    if (next < MIN_ZOOM) {
-                      next = MIN_ZOOM
-                    }
-                    if (next > MAX_ZOOM) {
-                      next = MAX_ZOOM
-                    }
-                    this.zoom = next
-                  })
-              )
-            )
-        }
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .backgroundColor('#FFFFFF')
-      .borderRadius(12)
-      .shadow({ radius: 16, color: '#1A000000', offsetY: 2 })
-      .padding(2)
-      .clip(true)
-
-
-      // 底部工具栏
-      Row({ space: 10 }) {
-        Text('鸿绘')
-          .fontSize(16)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#6B7280')
-          .layoutWeight(1)
-
-        Button('打开图片', { type: ButtonType.Capsule })
-          .height(40).padding({ left: 14, right: 14 })
-          .onClick(() => this.pickImage())
-
-        SaveButton({
-          icon: SaveIconStyle.FULL_FILLED,
-          text: SaveDescription.SAVE_IMAGE,
-          buttonType: ButtonType.Capsule
-        })
-          .height(40)
-          .padding({ left: 14, right: 14 })
-          .onClick(async (event, result: SaveButtonOnClickResult) => {
-            if (result === SaveButtonOnClickResult.SUCCESS) {
-              // 用户点了保存按钮，系统临时授予相册写入权限（约 5 秒）
-              await this.saveImage()
-            } else {
-              promptAction.showToast({ message: '授权失败，无法保存' })
-            }
+          SaveButton({
+            icon: SaveIconStyle.FULL_FILLED,
+            text: SaveDescription.SAVE_IMAGE,
+            buttonType: ButtonType.Capsule
           })
+            .height(40)
+            .padding({ left: 14, right: 14 })
+            .onClick(async (event, result: SaveButtonOnClickResult) => {
+              if (result === SaveButtonOnClickResult.SUCCESS) {
+                // 用户点了保存按钮，系统临时授予相册写入权限（约 5 秒）
+                await this.saveImage()
+              } else {
+                promptAction.showToast({ message: '授权失败，无法保存' })
+              }
+            })
 
-        Button('重置', { type: ButtonType.Capsule })
-          .height(40)
-          .padding({ left: 14, right: 14 })
-          .backgroundColor('#EEF2FF')
-          .fontColor('#3B82F6')
-          .onClick(() => this.resetView())
+          Button('重置', { type: ButtonType.Capsule })
+            .height(40)
+            .padding({ left: 14, right: 14 })
+            .backgroundColor('#EEF2FF')
+            .fontColor('#3B82F6')
+            .onClick(() => this.resetView())
+        }
+        .width('100%')
+        .padding({
+          left: 12,
+          right: 12,
+          top: 10,
+          bottom: 10
+        })
+        .backgroundColor('#F7F8FA')
+        .border({ width: { top: 0.5 }, color: '#E5E7EB' })
+        .alignItems(VerticalAlign.Center)
+
       }
-      .width('100%')
-      .padding({
-        left: 12,
-        right: 12,
-        top: 10,
-        bottom: 10
-      })
-      .backgroundColor('#F7F8FA')
-      .border({ width: { top: 0.5 }, color: '#E5E7EB' })
-      .alignItems(VerticalAlign.Center)
-
+      .width('100%').height('100%')
+      .backgroundColor('#FFFFFF')
+      .padding(12)
     }
-    .width('100%').height('100%')
-    .backgroundColor('#FFFFFF')
-    .padding(12)
   }
-
   private async resetView() {
     // 重置视图参数（缩放 / 平移）
     this.zoom = 1.0
@@ -228,9 +223,14 @@ struct Index {
       return
     }
 
-    // 重置亮度到默认值（显示回“原图亮度”）
+    // 重置亮度到默认值
     if (this.brightnessLevel !== 0) {
       this.brightnessLevel = 0.0
+    }
+
+    // 重置对比度到默认值
+    if (this.contrastLevel !== 0) {
+      this.contrastLevel = 0.0
     }
 
     // 本来就没旋转过，直接返回
@@ -352,7 +352,7 @@ struct Index {
 
       // 保存前把亮度真正写进像素
       const pm: image.PixelMap = this.pixelMap as image.PixelMap
-      await this.bakeBrightnessToPixelMap(pm)
+      await this.bakeToneToPixelMap(pm)
 
       // 下面保持原来的保存逻辑不变，用 pm 保存
       const uri: string = await helper.createAsset(
@@ -472,22 +472,34 @@ struct Index {
     }
   }
 
-  // 构建亮度矩阵
-  private buildBrightnessMatrix(): Array<number> {
-    const b: number = this.brightnessLevel; // 建议范围 [-0.5, 0.5]
+  // 构建亮度 + 对比度矩阵
+  private buildToneMatrix(): Array<number> {
+    // 亮度（建议范围 [-0.5, 0.5]）
+    const b: number = this.brightnessLevel
+
+    // 对比度系数 c：contrastLevel ∈ [-1,1] 对应 c ∈ [0,2]
+    const c: number = 1.0 + this.contrastLevel
+
+    // 为了让“保持中心点不变”，需要额外的偏移项
+    // 在归一化[0,1]空间里，中点是 0.5：
+    // new = (old - 0.5) * c + 0.5 + b
+    //     = c * old + (0.5 * (1 - c) + b)
+    const offset: number = 0.5 * (1.0 - c) + b
 
     return [
-      1, 0, 0, 0, b,
-      0, 1, 0, 0, b,
-      0, 0, 1, 0, b,
+      c, 0, 0, 0, offset,
+      0, c, 0, 0, offset,
+      0, 0, c, 0, offset,
       0, 0, 0, 1, 0
     ]
   }
 
-  // 把当前 brightnessLevel 烘焙到 pixelMap 里（只在保存前调用）注意：调用后会把 brightnessLevel 归零，并触发一次刷新
-  private async bakeBrightnessToPixelMap(pm: image.PixelMap): Promise<void> {
-    // 没有调整亮度就不用动像素，直接返回
-    if (this.brightnessLevel === 0) {
+
+  // 把当前 brightnessLevel & contrastLevel 一起烘焙到 pixelMap 里
+  // 注意：调用后会把 brightnessLevel / contrastLevel 归零，并触发一次刷新
+  private async bakeToneToPixelMap(pm: image.PixelMap): Promise<void> {
+    // 没有调整亮度和对比度就不用动像素，直接返回
+    if (this.brightnessLevel === 0 && this.contrastLevel === 0) {
       return
     }
 
@@ -529,8 +541,11 @@ struct Index {
         break
     }
 
-    // 根据 brightnessLevel 计算偏移量
-    const shift: number = this.brightnessLevel * 255
+    // 对比度系数 c（0~2），亮度偏移 *255
+    const c: number = 1.0 + this.contrastLevel
+    const shiftBrightness: number = this.brightnessLevel * 255.0
+    // 把公式 new = (old - 128)*c + 128 + shiftBrightness 展开：
+    const shiftTotal: number = 128.0 * (1.0 - c) + shiftBrightness
 
     const clamp = (v: number): number => {
       if (v < 0) {
@@ -549,9 +564,13 @@ struct Index {
       const bIndex: number = i + bOffset
       const aIndex: number = i + aOffset
 
-      data[rIndex] = clamp(data[rIndex] + shift)
-      data[gIndex] = clamp(data[gIndex] + shift)
-      data[bIndex] = clamp(data[bIndex] + shift)
+      const r = data[rIndex]
+      const g = data[gIndex]
+      const b = data[bIndex]
+
+      data[rIndex] = clamp(c * r + shiftTotal)
+      data[gIndex] = clamp(c * g + shiftTotal)
+      data[bIndex] = clamp(c * b + shiftTotal)
       // alpha 原样保持
       data[aIndex] = data[aIndex]
     }
@@ -559,10 +578,32 @@ struct Index {
     // 把修改后的像素写回 pixelMap
     await pm.writeBufferToPixels(buffer)
 
-    // 把状态亮度归零：此时底层像素已经是“新亮度”，
-    //    再把 colorFilter 的 brightnessLevel 设回 0，
-    //    视觉效果保持不变（不会叠加两次亮度）
+    // 把状态归零：此时底层像素已经是“新亮度 + 新对比度”
+    // 再把 colorFilter 的参数设回 0，视觉效果保持不变（不会叠加两次）
     this.brightnessLevel = 0.0
+    this.contrastLevel = 0.0
     this.pixelVersion++ // 触发 Image 重新渲染一次
   }
+
+
+  // 对比度调整
+  private adjustContrast(delta: number) {
+    if (!this.pixelMap) {
+      promptAction.showToast({ message: '请先打开图片' })
+      return
+    }
+
+    this.contrastLevel += delta
+
+    const MAX_CONTRAST: number = 1.0   // 对比度增强上限
+    const MIN_CONTRAST: number = -1.0  // 对比度降低下限
+
+    if (this.contrastLevel > MAX_CONTRAST) {
+      this.contrastLevel = MAX_CONTRAST
+    }
+    if (this.contrastLevel < MIN_CONTRAST) {
+      this.contrastLevel = MIN_CONTRAST
+    }
+  }
+
 }
