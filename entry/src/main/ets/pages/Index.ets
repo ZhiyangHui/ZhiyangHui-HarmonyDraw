@@ -13,6 +13,30 @@ interface ErrorWithCode {
   message?: string
 }
 
+enum TopMenu {
+  None,
+  Image,   // 图片操作
+  Shape,   // 形状
+  Brush    // 画笔
+}
+
+enum ShapeTool {
+  None,
+  Point,
+  Line,
+  Rect,
+  Circle,
+  Ellipse,
+  FreeDraw
+}
+
+enum BrushTool {
+  None,
+  Pen,
+  Highlighter,
+  Eraser
+}
+
 
 @Entry
 @Component
@@ -33,6 +57,21 @@ struct Index {
   @State brightnessLevel: number = 0.0 // -0.5 ~ 0.5 左右，0 是原图
   @State contrastLevel: number = 0.0   // -1.0 ~ 1.0（0 是原图对比度）
 
+  @State showLeftPanel: boolean = false   // 左侧工具栏是否展开
+  @State currentTool: string = ''        // 当前选择的工具类型（point/line/rect...）
+
+
+  @State activeMenu: TopMenu = TopMenu.None   // 当前展开的顶栏菜单
+  @State currentShape: ShapeTool = ShapeTool.None
+  @State currentBrush: BrushTool = BrushTool.None
+
+
+  // 顶部菜单当前选中的一级菜单：image / shape / brush / ''(不显示二级)
+  @State currentMenu: string = 'image'
+
+  // 当前二级菜单（形状 / 画笔才会使用）
+  @State currentSubTool: string = ''
+
   // 手势内部状态
   private lastPanX: number = 0
   private lastPanY: number = 0
@@ -43,48 +82,205 @@ struct Index {
       // 顶部工具栏
       Column() {
         Column() {
-          Scroll() {
+          // 顶部工具栏
+          Column() {
+            // === 一级菜单：图片操作 / 形状 / 画笔 / 撤销 ===
             Row({ space: 8 }) {
-
-              Button('对比度+', { type: ButtonType.Capsule })
+              // 一级按钮：图片操作
+              Button('图片操作', { type: ButtonType.Capsule })
                 .height(32)
                 .fontSize(12)
-                .onClick(() => this.adjustContrast(0.1))
+                .backgroundColor(this.currentMenu === 'image' ? '#2563EB' : '#EFF6FF')
+                .fontColor(this.currentMenu === 'image' ? '#FFFFFF' : '#1D4ED8')
+                .onClick(() => {
+                  this.currentMenu = this.currentMenu === 'image' ? '' : 'image'
+                })
 
-              Button('对比度-', { type: ButtonType.Capsule })
+              // 一级按钮：形状
+              Button('形状', { type: ButtonType.Capsule })
                 .height(32)
                 .fontSize(12)
-                .onClick(() => this.adjustContrast(-0.1))
+                .backgroundColor(this.currentMenu === 'shape' ? '#2563EB' : '#EFF6FF')
+                .fontColor(this.currentMenu === 'shape' ? '#FFFFFF' : '#1D4ED8')
+                .onClick(() => {
+                  this.currentMenu = this.currentMenu === 'shape' ? '' : 'shape'
+                })
 
-              Button('左旋90°', { type: ButtonType.Capsule })
+              // 一级按钮：画笔
+              Button('画笔', { type: ButtonType.Capsule })
                 .height(32)
                 .fontSize(12)
-                .onClick(() => this.rotateLeft90())
+                .backgroundColor(this.currentMenu === 'brush' ? '#2563EB' : '#EFF6FF')
+                .fontColor(this.currentMenu === 'brush' ? '#FFFFFF' : '#1D4ED8')
+                .onClick(() => {
+                  this.currentMenu = this.currentMenu === 'brush' ? '' : 'brush'
+                })
 
-              Button('右旋90°', { type: ButtonType.Capsule })
+              // 一级按钮：撤销（这里先占位，后面你接入真正的撤销逻辑）
+              Button('撤销', { type: ButtonType.Capsule })
                 .height(32)
                 .fontSize(12)
-                .onClick(() => this.rotateRight90())
-
-              Button('变亮', { type: ButtonType.Capsule })
-                .height(32)
-                .fontSize(12)
-                .onClick(() => this.adjustBrightness(0.05))
-
-              Button('变暗', { type: ButtonType.Capsule })
-                .height(32)
-                .fontSize(12)
-                .onClick(() => this.adjustBrightness(-0.05))
+                .backgroundColor('#fff31818')
+                .onClick(() => {
+                  // TODO: 在这里实现撤销逻辑
+                })
             }
-            .height(38)
+            .width('100%')
+            .padding({
+              left: 4,
+              right: 4,
+              top: 4,
+              bottom: 4
+            })
+            .justifyContent(FlexAlign.Center)
+
+            // === 二级菜单区域：根据 currentMenu 决定显示哪一行 ===
+            if (this.currentMenu === 'image') {
+              // 图片操作：带横向滚动条
+              Scroll() {
+                Row({ space: 8 }) {
+                  // 二级按钮统一用 Normal + 浅灰背景，与一级区分
+                  Button('对比度+', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor('#F3F4F6')
+                    .fontColor('#374151')
+                    .onClick(() => this.adjustContrast(0.1))
+
+                  Button('对比度-', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor('#F3F4F6')
+                    .fontColor('#374151')
+                    .onClick(() => this.adjustContrast(-0.1))
+
+                  Button('左旋90°', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor('#F3F4F6')
+                    .fontColor('#374151')
+                    .onClick(() => this.rotateLeft90())
+
+                  Button('右旋90°', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor('#F3F4F6')
+                    .fontColor('#374151')
+                    .onClick(() => this.rotateRight90())
+
+                  Button('变亮', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor('#F3F4F6')
+                    .fontColor('#374151')
+                    .onClick(() => this.adjustBrightness(0.05))
+
+                  Button('变暗', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor('#F3F4F6')
+                    .fontColor('#374151')
+                    .onClick(() => this.adjustBrightness(-0.05))
+                }
+                .height(32)
+                .padding({ left: 4, right: 4 })
+              }
+              .scrollable(ScrollDirection.Horizontal)
+              .width('100%')
+              .padding({ bottom: 8 }) // 二级菜单和画布之间留一点空隙
+            } else if (this.currentMenu === 'shape') {
+              Scroll() {
+                Row({ space: 8 }) {
+
+                  Button('点', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentShape === ShapeTool.Point ? '#2563EB' : '#E5F3FF')
+                    .fontColor(this.currentShape === ShapeTool.Point ? '#FFFFFF' : '#1D4ED8')
+                    .onClick(() => this.currentShape = ShapeTool.Point)
+
+                  Button('直线', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentShape === ShapeTool.Line ? '#2563EB' : '#E5F3FF')
+                    .fontColor(this.currentShape === ShapeTool.Line ? '#FFFFFF' : '#1D4ED8')
+                    .onClick(() => this.currentShape = ShapeTool.Line)
+
+                  Button('矩形', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentShape === ShapeTool.Rect ? '#2563EB' : '#E5F3FF')
+                    .fontColor(this.currentShape === ShapeTool.Rect ? '#FFFFFF' : '#1D4ED8')
+                    .onClick(() => this.currentShape = ShapeTool.Rect)
+
+                  Button('圆', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentShape === ShapeTool.Circle ? '#2563EB' : '#E5F3FF')
+                    .fontColor(this.currentShape === ShapeTool.Circle ? '#FFFFFF' : '#1D4ED8')
+                    .onClick(() => this.currentShape = ShapeTool.Circle)
+
+                  Button('椭圆', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentShape === ShapeTool.Ellipse ? '#2563EB' : '#E5F3FF')
+                    .fontColor(this.currentShape === ShapeTool.Ellipse ? '#FFFFFF' : '#1D4ED8')
+                    .onClick(() => this.currentShape = ShapeTool.Ellipse)
+
+                  Button('线条', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentShape === ShapeTool.FreeDraw ? '#2563EB' : '#E5F3FF')
+                    .fontColor(this.currentShape === ShapeTool.FreeDraw ? '#FFFFFF' : '#1D4ED8')
+                    .onClick(() => this.currentShape = ShapeTool.FreeDraw)
+
+                }
+                .height(32)
+                .padding({ left: 4, right: 4 })
+              }
+              .scrollable(ScrollDirection.Horizontal)
+              .width('100%')
+              .padding({ bottom: 8 })
+
+            } else if (this.currentMenu === 'brush') {
+              Scroll() {
+                Row({ space: 8 }) {
+
+                  Button('细笔', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentBrush === BrushTool.Pen ? '#FB923C' : '#FEF3C7')
+                    .fontColor(this.currentBrush === BrushTool.Pen ? '#FFFFFF' : '#92400E')
+                    .onClick(() => this.currentBrush = BrushTool.Pen)
+
+                  Button('粗笔', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentBrush === BrushTool.Highlighter ? '#FB923C' : '#FEF3C7')
+                    .fontColor(this.currentBrush === BrushTool.Highlighter ? '#FFFFFF' : '#92400E')
+                    .onClick(() => this.currentBrush = BrushTool.Highlighter)
+
+                  Button('荧光', { type: ButtonType.Normal })
+                    .height(28)
+                    .fontSize(11)
+                    .backgroundColor(this.currentBrush === BrushTool.Eraser ? '#FB923C' : '#FEF3C7')
+                    .fontColor(this.currentBrush === BrushTool.Eraser ? '#FFFFFF' : '#92400E')
+                    .onClick(() => this.currentBrush = BrushTool.Eraser)
+
+                }
+                .height(32)
+                .padding({ left: 4, right: 4 })
+              }
+              .scrollable(ScrollDirection.Horizontal)
+              .width('100%')
+              .padding({ bottom: 8 })
+            }
           }
-          .scrollable(ScrollDirection.Horizontal)
-          .width('100%')
-          .padding({ left: 4, right: 4, bottom: 10 })
-        }
 
 
-        // 画布
+
+
+          // 画布
         Stack() {
           if (!this.pixelMap) {
             Column() {
@@ -209,6 +405,7 @@ struct Index {
       .width('100%').height('100%')
       .backgroundColor('#FFFFFF')
       .padding(12)
+    }
     }
   }
   private async resetView() {
@@ -605,5 +802,30 @@ struct Index {
       this.contrastLevel = MIN_CONTRAST
     }
   }
+
+  private onClickTopMenu(menu: TopMenu) {
+    // 再次点击同一个按钮时收起菜单
+    if (this.activeMenu === menu) {
+      this.activeMenu = TopMenu.None
+    } else {
+      this.activeMenu = menu
+    }
+  }
+
+  private selectShape(shape: ShapeTool) {
+    // 先只记录当前形状，真正绘制逻辑以后再加
+    this.currentShape = shape
+  }
+
+  private selectBrush(brush: BrushTool) {
+    // 先只记录当前画笔
+    this.currentBrush = brush
+  }
+
+  private undo() {
+    // 撤销逻辑以后再实现，这里先留空，保证编译通过
+    console.info('undo() called — 撤销逻辑待实现')
+  }
+
 
 }
