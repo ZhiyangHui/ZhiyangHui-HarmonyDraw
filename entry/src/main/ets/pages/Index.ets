@@ -53,30 +53,30 @@ struct Index {
           Button('裁剪', { type: ButtonType.Capsule })
             .height(32)
             .fontSize(12)
-            .onClick(() => this.cropCenter()) // 空壳函数
+            .onClick(() => this.cropCenter())
 
           // —— 按钮：左旋 90°
           Button('左旋90°', { type: ButtonType.Capsule })
             .height(32)
             .fontSize(12)
-            .onClick(() => this.rotateLeft90()) // 空壳函数
+            .onClick(() => this.rotateLeft90())
 
           // —— 按钮：右旋 90°
           Button('右旋90°', { type: ButtonType.Capsule })
             .height(32)
             .fontSize(12)
-            .onClick(() => this.rotateRight90()) // 空壳函数
+            .onClick(() => this.rotateRight90())
 
 
           Button('变亮', { type: ButtonType.Capsule })
             .height(32)
             .fontSize(12)
-            .onClick(() => this.adjustBrightness(0.05)) // 空壳
+            .onClick(() => this.adjustBrightness(0.05))
 
           Button('变暗', { type: ButtonType.Capsule })
             .height(32)
             .fontSize(12)
-            .onClick(() => this.adjustBrightness(-0.05)) // 空壳
+            .onClick(() => this.adjustBrightness(-0.05))
 
 
         }
@@ -113,15 +113,13 @@ struct Index {
             .colorFilter(this.buildBrightnessMatrix())
 
 
-          // =============================
-          // 2) 透明手势捕获层（只接收手势，不挡按钮）
-          // =============================
+
+          // 透明手势捕获层（只接收手势，不挡按钮）
           Stack()
             .width('100%')
             .height('100%')
             .backgroundColor(Color.Transparent)   // 全透明
             .hitTestBehavior(HitTestMode.Transparent)
-            // ⬆ 关键：不阻挡点击事件，只接收手势
             .gesture(
               GestureGroup(GestureMode.Parallel,
 
@@ -453,6 +451,7 @@ struct Index {
     }
   }
 
+  // 亮度调整
   private async adjustBrightness(delta: number) {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
