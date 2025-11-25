@@ -13,6 +13,18 @@ interface ErrorWithCode {
   message?: string
 }
 
+// 每一步画布状态快照，用于撤销
+interface CanvasSnapshot {
+  pixelMap?: image.PixelMap
+  zoom: number
+  offsetX: number
+  offsetY: number
+  brightnessLevel: number
+  contrastLevel: number
+  accumulatedRotate: number
+}
+
+
 enum TopMenu {
   None,
   Image, // 图片操作
@@ -77,6 +89,12 @@ struct Index {
   // 画布大小（为了把 UI 坐标比例映射成像素坐标）
   @State canvasWidth: number = 0
   @State canvasHeight: number = 0
+  // 撤销用的历史栈（不需要响应式）
+  private history: Array<CanvasSnapshot> = []
+  private historyIndex: number = -1
+  private readonly historyLimit: number = 10
+  // 🔹 新增：记录“打开图片时的原图快照”
+  private originalPixelMap?: image.PixelMap = undefined
 
   build() {
     Column() {
@@ -122,8 +140,8 @@ struct Index {
                 .height(32)
                 .fontSize(12)
                 .backgroundColor('#fff31818')
-                .onClick(() => {
-                  // TODO: 在这里实现撤销逻辑
+                .onClick(async () => {
+                  await this.undo()
                 })
             }
             .width('100%')
@@ -468,57 +486,109 @@ struct Index {
     }
   }
 
+  // 鸿蒙 6.0 官方可用、不变色的克隆：pack → decode
+  private async clonePixelMap(pm: image.PixelMap): Promise<image.PixelMap> {
+    // 1. pack 成 PNG 内存流（注意：packToData 只有两个参数）
+    const packer = image.createImagePacker()
+    const packOpts: image.PackingOption = {
+      format: 'image/png', // PNG 无损，颜色最安全
+      quality: 100
+    }
+
+    // HarmonyOS 6.0：packToData 返回 Promise<ArrayBuffer>
+    const buffer: ArrayBuffer = await packer.packToData(pm, packOpts)
+    packer.release?.()
+
+    // 2. 再 decode 成新的 PixelMap（保持 editable）
+    const imgSource = image.createImageSource(buffer)
+    const clonePm: image.PixelMap = await imgSource.createPixelMap({
+      editable: true
+    })
+    imgSource.release?.()
+
+    return clonePm
+  }
+
+  // 在一次“会改变图像/状态”的操作之前调用，记录快照
+  // includePixel = true：把 pmForSnapshot 这张图作为快照保存（不拷贝像素）——专门给裁剪用
+  private async pushHistorySnapshot(includePixel: boolean, pmForSnapshot?: image.PixelMap): Promise<void> {
+    let snapshotPixel: image.PixelMap | undefined = undefined
+
+    if (includePixel && pmForSnapshot) {
+      snapshotPixel = pmForSnapshot
+    }
+
+    // 如果已经撤销到中间，再做新操作，则砍掉“未来”分支
+    if (this.historyIndex >= 0 && this.historyIndex < this.history.length - 1) {
+      for (let i = this.historyIndex + 1; i < this.history.length; i++) {
+        // 只释放真正不再需要的快照图像
+        this.history[i].pixelMap?.release?.()
+      }
+      this.history = this.history.slice(0, this.historyIndex + 1)
+    }
+
+    this.history.push({
+      pixelMap: snapshotPixel,
+      zoom: this.zoom,
+      offsetX: this.offsetX,
+      offsetY: this.offsetY,
+      brightnessLevel: this.brightnessLevel,
+      contrastLevel: this.contrastLevel,
+      accumulatedRotate: this.accumulatedRotate
+    })
+
+    // 控制历史长度
+    if (this.history.length > this.historyLimit) {
+      const removed = this.history.shift()
+      removed?.pixelMap?.release?.()
+    }
+
+    this.historyIndex = this.history.length - 1
+  }
+
+  // 重置到“刚打开图片时”的状态
   private async resetView() {
-    // 重置视图参数（缩放 / 平移）
+    // 没有图，直接返回
+    if (!this.pixelMap) {
+      return
+    }
+
+    // 没有原图快照：说明是老数据或异常情况，只重置视图参数
+    if (!this.originalPixelMap) {
+      this.zoom = 1.0
+      this.offsetX = 0
+      this.offsetY = 0
+      this.brightnessLevel = 0.0
+      this.contrastLevel = 0.0
+      this.accumulatedRotate = 0
+      this.pixelVersion++
+      return
+    }
+
+    // ① 把当前状态放进历史栈，reset 也可以被“撤销”
+    const beforeResetPm = await this.clonePixelMap(this.pixelMap as image.PixelMap)
+    await this.pushHistorySnapshot(true, beforeResetPm)
+
+    // ② 用 originalPixelMap 还原像素（重新 clone 一份可编辑版本）
+    const newPm = await this.clonePixelMap(this.originalPixelMap as image.PixelMap)
+
+    // 释放当前正在使用的 PixelMap
+    ;
+    (this.pixelMap as image.PixelMap).release?.()
+
+    // 换成“刚打开时”的图
+    this.pixelMap = newPm
+
+    // ③ 还原视图参数
     this.zoom = 1.0
     this.offsetX = 0
     this.offsetY = 0
+    this.brightnessLevel = 0.0
+    this.contrastLevel = 0.0
+    this.accumulatedRotate = 0
 
-    // 没图片就啥也不干
-    if (!this.pixelMap) {
-      this.accumulatedRotate = 0
-      return
-    }
-
-    // 重置亮度到默认值
-    if (this.brightnessLevel !== 0) {
-      this.brightnessLevel = 0.0
-    }
-
-    // 重置对比度到默认值
-    if (this.contrastLevel !== 0) {
-      this.contrastLevel = 0.0
-    }
-
-    // 本来就没旋转过，直接返回
-    if (this.accumulatedRotate === 0) {
-      return
-    }
-
-    // 正在旋转就先不抢，避免打架
-    if (this.isRotating) {
-      return
-    }
-
-    // 算出旋回去的角度
-    const back = (360 - this.accumulatedRotate) % 360
-    if (back === 0) {
-      this.accumulatedRotate = 0
-      return
-    }
-
-    try {
-      this.isRotating = true
-      await (this.pixelMap as image.PixelMap).rotate(back)
-      this.pixelVersion++
-      this.accumulatedRotate = 0
-    } catch (err) {
-      const e = err as ErrorWithCode
-      console.error(`resetView rotateBack failed, code=${e?.code}, msg=${e?.message}`)
-      promptAction.showToast({ message: '重置图片失败' })
-    } finally {
-      this.isRotating = false
-    }
+    // ④ 通知 UI 刷新
+    this.pixelVersion++
   }
 
   // 打开图片（
@@ -566,11 +636,28 @@ struct Index {
       await fileIo.close(file)
 
       // 更新 UI 状态
+      // 先释放旧的原图快照
+      if (this.originalPixelMap) {
+        this.originalPixelMap.release?.()
+      }
+      // 保存一份“打开时的原图”（以后 resetView 就用它来还原）
+      this.originalPixelMap = await this.clonePixelMap(pm)
+
+      // 释放旧的当前图
       if (this.pixelMap) {
         this.pixelMap.release?.()
       }
+      // 当前正在编辑的 PixelMap
       this.pixelMap = pm
-      this.resetView()
+
+      // 初始化视图到“刚打开”的状态
+      this.zoom = 1.0
+      this.offsetX = 0
+      this.offsetY = 0
+      this.brightnessLevel = 0.0
+      this.contrastLevel = 0.0
+      this.accumulatedRotate = 0
+      this.pixelVersion++
 
       promptAction.showToast({ message: '图片已加载 ' })
     } catch (err) {
@@ -668,7 +755,7 @@ struct Index {
 
     // 图片左上角（受 offsetX/Y 影响）
     const imageLeft = (this.canvasWidth - realW) / 2 + this.offsetX
-    const imageTop  = (this.canvasHeight - realH) / 2 + this.offsetY
+    const imageTop = (this.canvasHeight - realH) / 2 + this.offsetY
 
     // UI 裁剪框（未裁边界前）
     let uiX1 = Math.min(this.cropStartX, this.cropEndX)
@@ -696,10 +783,10 @@ struct Index {
     }
 
     // 映射到像素坐标
-    const px1 = (uiX1 - imageLeft) * (info.size.width  / realW)
-    const py1 = (uiY1 - imageTop ) * (info.size.height / realH)
-    const px2 = (uiX2 - imageLeft) * (info.size.width  / realW)
-    const py2 = (uiY2 - imageTop ) * (info.size.height / realH)
+    const px1 = (uiX1 - imageLeft) * (info.size.width / realW)
+    const py1 = (uiY1 - imageTop) * (info.size.height / realH)
+    const px2 = (uiX2 - imageLeft) * (info.size.width / realW)
+    const py2 = (uiY2 - imageTop) * (info.size.height / realH)
 
     const cropX = Math.max(0, Math.floor(px1))
     const cropY = Math.max(0, Math.floor(py1))
@@ -712,14 +799,22 @@ struct Index {
       return
     }
 
-    // 执行裁剪
+    // ========= 核心修改部分开始 =========
+
+    // 1) 先 clone 一份“裁剪前的完整图”作为历史快照
+    const backupPm = await this.clonePixelMap(pm)
+    await this.pushHistorySnapshot(true, backupPm)
+
+    // 2) 在当前 pixelMap 上原地裁剪（保持 this.pixelMap 引用不变）
     await pm.crop({
       x: cropX,
       y: cropY,
       size: { width: cropW, height: cropH }
     })
 
-    // 完成后复位
+    // ========= 核心修改部分结束 =========
+
+    // 完成后复位视图
     this.cropMode = false
     this.zoom = 1
     this.offsetX = 0
@@ -735,8 +830,6 @@ struct Index {
     promptAction.showToast({ message: '裁剪完成' })
   }
 
-
-
   // 向右旋转 90 度（顺时针）
   private async rotateRight90() {
     if (!this.pixelMap) {
@@ -746,6 +839,9 @@ struct Index {
     if (this.isRotating) {
       return
     }
+
+    // 先记录历史快照（不包含像素）
+    await this.pushHistorySnapshot(false)
 
     this.isRotating = true
     try {
@@ -774,6 +870,9 @@ struct Index {
       return
     }
 
+    // 先记录历史快照（不包含像素）
+    await this.pushHistorySnapshot(false)
+
     this.isRotating = true
     try {
       // 实际对 PixelMap 做顺时针 270°（等价于逆时针 90°）
@@ -798,6 +897,9 @@ struct Index {
       promptAction.showToast({ message: '请先打开图片' })
       return
     }
+
+    // 记录当前亮度/对比度参数（不拷贝像素）
+    await this.pushHistorySnapshot(false)
 
     // brightnessLevel 取一个相对温和的区间，防止崩坏
     this.brightnessLevel += delta
@@ -926,11 +1028,14 @@ struct Index {
   }
 
   // 对比度调整
-  private adjustContrast(delta: number) {
+  private async adjustContrast(delta: number) {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
       return
     }
+
+    // 记录当前亮度/对比度参数（不拷贝像素）
+    await this.pushHistorySnapshot(false)
 
     this.contrastLevel += delta
 
@@ -964,8 +1069,52 @@ struct Index {
     this.currentBrush = brush
   }
 
-  private undo() {
-    // 撤销逻辑以后再实现，这里先留空，保证编译通过
-    console.info('undo() called — 撤销逻辑待实现')
+  private async undo() {
+    if (this.historyIndex < 0 || this.history.length === 0) {
+      promptAction.showToast({ message: '没有可以撤销的操作' })
+      return
+    }
+
+    const snapshot: CanvasSnapshot = this.history[this.historyIndex]
+    this.historyIndex--
+
+    // === 情况 1：有 pixelMap 快照（如裁剪） ===
+    if (snapshot.pixelMap) {
+      // 把 snapshot.pixelMap 克隆成可编辑版本
+      const newPm = await this.clonePixelMap(snapshot.pixelMap)
+
+      // 释放当前 pixelMap（不等于 snapshot.pixelMap）
+      if (this.pixelMap && this.pixelMap !== snapshot.pixelMap) {
+        (this.pixelMap as image.PixelMap).release?.()
+      }
+
+      // 切换到新的 editable PixelMap
+      this.pixelMap = newPm
+    }
+
+    // === 情况 2：旋转 / 亮度 / 对比度（无 pixelMap）===
+    else if (this.pixelMap) {
+      const currentAngle = this.accumulatedRotate
+      const targetAngle = snapshot.accumulatedRotate
+
+      const diff = (360 + targetAngle - currentAngle) % 360
+      if (diff === 90 || diff === 180 || diff === 270) {
+        try {
+          await (this.pixelMap as image.PixelMap).rotate(diff)
+        } catch (err) {
+          console.error(`undo rotateBack failed: ${JSON.stringify(err)}`)
+        }
+      }
+    }
+
+    // === 恢复其他状态（缩放/平移/亮度/对比度等） ===
+    this.zoom = snapshot.zoom
+    this.offsetX = snapshot.offsetX
+    this.offsetY = snapshot.offsetY
+    this.brightnessLevel = snapshot.brightnessLevel
+    this.contrastLevel = snapshot.contrastLevel
+    this.accumulatedRotate = snapshot.accumulatedRotate
+
+    this.pixelVersion++
   }
 }

@@ -1,7 +1,7 @@
 {
   "app": {
     "bundleName": "com.example.harmonydraw",
-    "patchVersionCode": 2000021,
+    "patchVersionCode": 2000022,
     "versionCode": 1000000
   },
   "module": {
