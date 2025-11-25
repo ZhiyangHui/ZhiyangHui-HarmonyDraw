@@ -15,9 +15,9 @@ interface ErrorWithCode {
 
 enum TopMenu {
   None,
-  Image,   // 图片操作
-  Shape,   // 形状
-  Brush    // 画笔
+  Image, // 图片操作
+  Shape, // 形状
+  Brush // 画笔
 }
 
 enum ShapeTool {
@@ -47,35 +47,36 @@ struct Index {
   @State offsetX: number = 0
   @State offsetY: number = 0
   @State pixelVersion: number = 0
-
   // 旋转中标志，防止连点导致两次右旋
   private isRotating: boolean = false
   private accumulatedRotate: number = 0 // 之前旋转的总度数
-
   // 旋转 / 亮度 / 对比度
   @State rotateDeg: number = 0 // 旋转角度
   @State brightnessLevel: number = 0.0 // -0.5 ~ 0.5 左右，0 是原图
-  @State contrastLevel: number = 0.0   // -1.0 ~ 1.0（0 是原图对比度）
-
-  @State showLeftPanel: boolean = false   // 左侧工具栏是否展开
-  @State currentTool: string = ''        // 当前选择的工具类型（point/line/rect...）
-
-
-  @State activeMenu: TopMenu = TopMenu.None   // 当前展开的顶栏菜单
+  @State contrastLevel: number = 0.0 // -1.0 ~ 1.0（0 是原图对比度）
+  @State showLeftPanel: boolean = false // 左侧工具栏是否展开
+  @State currentTool: string = '' // 当前选择的工具类型（point/line/rect...）
+  @State activeMenu: TopMenu = TopMenu.None // 当前展开的顶栏菜单
   @State currentShape: ShapeTool = ShapeTool.None
   @State currentBrush: BrushTool = BrushTool.None
-
-
   // 顶部菜单当前选中的一级菜单：image / shape / brush / ''(不显示二级)
   @State currentMenu: string = 'image'
-
   // 当前二级菜单（形状 / 画笔才会使用）
   @State currentSubTool: string = ''
-
   // 手势内部状态
   private lastPanX: number = 0
   private lastPanY: number = 0
   private lastZoom: number = 1.0
+  // 裁剪模式 开/关
+  @State cropMode: boolean = false
+  // 手势选择框（UI 坐标）
+  @State cropStartX: number = 0
+  @State cropStartY: number = 0
+  @State cropEndX: number = 0
+  @State cropEndY: number = 0
+  // 画布大小（为了把 UI 坐标比例映射成像素坐标）
+  @State canvasWidth: number = 0
+  @State canvasHeight: number = 0
 
   build() {
     Column() {
@@ -139,6 +140,27 @@ struct Index {
               // 图片操作：带横向滚动条
               Scroll() {
                 Row({ space: 8 }) {
+                  Button('裁剪', { type: ButtonType.Capsule })
+                    .height(32)
+                    .fontSize(12)
+                    .backgroundColor(this.cropMode ? '#EF4444' : '#EFF6FF')
+                    .fontColor(this.cropMode ? '#FFFFFF' : '#1D4ED8')
+                    .onClick(() => {
+                      if (!this.pixelMap) {
+                        // 不进入裁剪模式，但调用 doCrop，让 doCrop 自己弹出 toast
+                        this.doCrop()
+                        return
+                      }
+
+                      this.cropMode = !this.cropMode
+                      if (this.cropMode) {
+                        this.cropStartX = 0
+                        this.cropStartY = 0
+                        this.cropEndX = 0
+                        this.cropEndY = 0
+                      }
+                    })
+
                   // 二级按钮统一用 Normal + 浅灰背景，与一级区分
                   Button('对比度+', { type: ButtonType.Normal })
                     .height(28)
@@ -278,136 +300,174 @@ struct Index {
           }
 
 
-
-
           // 画布
-        Stack() {
-          if (!this.pixelMap) {
-            Column() {
-              Text('点击“打开图片”开始编辑')
-                .fontSize(14)
-                .fontColor('#9AA1A8')
-                .letterSpacing(0.5)
-            }
-            .width('100%').height('100%')
-            .justifyContent(FlexAlign.Center)
-            .alignItems(HorizontalAlign.Center)
-          } else {
-
-            // 图片渲染层（无手势，纯展示）
-            Image(this.pixelMap)
-              .id(`img-${this.pixelVersion}`)
-              .objectFit(ImageFit.Contain)
-              .width('100%')
-              .height('100%')
-              .scale({ x: this.zoom, y: this.zoom })
-              .translate({ x: this.offsetX, y: this.offsetY })
-              .colorFilter(this.buildToneMatrix())
-
-
-            // 透明手势捕获层（只接收手势，不挡按钮）
-            Stack()
-              .width('100%')
-              .height('100%')
-              .backgroundColor(Color.Transparent)   // 全透明
-              .hitTestBehavior(HitTestMode.Transparent)
-              .gesture(
-                GestureGroup(GestureMode.Parallel,
-
-                  // 拖动
-                  PanGesture({ direction: PanDirection.All, distance: 2 })
-                    .onActionStart(event => {
-                      this.lastPanX = this.offsetX
-                      this.lastPanY = this.offsetY
-                    })
-                    .onActionUpdate(event => {
-                      this.offsetX = this.lastPanX + event.offsetX
-                      this.offsetY = this.lastPanY + event.offsetY
-                    }),
-
-                  // 双指缩放
-                  PinchGesture()
-                    .onActionStart(event => {
-                      this.lastZoom = this.zoom
-                    })
-                    .onActionUpdate(event => {
-                      let next = this.lastZoom * event.scale
-                      const MIN_ZOOM = 0.3
-                      const MAX_ZOOM = 5.0
-                      if (next < MIN_ZOOM) {
-                        next = MIN_ZOOM
-                      }
-                      if (next > MAX_ZOOM) {
-                        next = MAX_ZOOM
-                      }
-                      this.zoom = next
-                    })
-                )
-              )
-          }
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .backgroundColor('#FFFFFF')
-        .borderRadius(12)
-        .shadow({ radius: 16, color: '#1A000000', offsetY: 2 })
-        .padding(2)
-        .clip(true)
-
-
-        // 底部工具栏
-        Row({ space: 10 }) {
-          Text('鸿绘')
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-            .fontColor('#6B7280')
-            .layoutWeight(1)
-
-          Button('打开图片', { type: ButtonType.Capsule })
-            .height(40).padding({ left: 14, right: 14 })
-            .onClick(() => this.pickImage())
-
-          SaveButton({
-            icon: SaveIconStyle.FULL_FILLED,
-            text: SaveDescription.SAVE_IMAGE,
-            buttonType: ButtonType.Capsule
-          })
-            .height(40)
-            .padding({ left: 14, right: 14 })
-            .onClick(async (event, result: SaveButtonOnClickResult) => {
-              if (result === SaveButtonOnClickResult.SUCCESS) {
-                // 用户点了保存按钮，系统临时授予相册写入权限（约 5 秒）
-                await this.saveImage()
-              } else {
-                promptAction.showToast({ message: '授权失败，无法保存' })
+          Stack() {
+            if (!this.pixelMap) {
+              Column() {
+                Text('点击“打开图片”开始编辑')
+                  .fontSize(14)
+                  .fontColor('#9AA1A8')
+                  .letterSpacing(0.5)
               }
+              .width('100%').height('100%')
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+            } else {
+
+              // ==========================
+              // 1. 图片显示层
+              // ==========================
+              Image(this.pixelMap)
+                .id(`img-${this.pixelVersion}`)
+                .objectFit(ImageFit.Contain)
+                .width('100%')
+                .height('100%')
+                .scale({ x: this.zoom, y: this.zoom })
+                .translate({ x: this.offsetX, y: this.offsetY })
+                .colorFilter(this.buildToneMatrix())
+
+
+              // ==========================
+              // 2. 拖拽 & 缩放手势层（不是裁剪时生效）
+              // ==========================
+              if (!this.cropMode) {
+                Stack()
+                  .width('100%')
+                  .height('100%')
+                  .backgroundColor(Color.Transparent)
+                  .hitTestBehavior(HitTestMode.Transparent)
+                  .gesture(
+                    GestureGroup(GestureMode.Parallel,
+                      PanGesture({ direction: PanDirection.All })
+                        .onActionStart(e => {
+                          this.lastPanX = this.offsetX
+                          this.lastPanY = this.offsetY
+                        })
+                        .onActionUpdate(e => {
+                          this.offsetX = this.lastPanX + e.offsetX
+                          this.offsetY = this.lastPanY + e.offsetY
+                        }),
+
+                      PinchGesture()
+                        .onActionStart(e => {
+                          this.lastZoom = this.zoom
+                        })
+                        .onActionUpdate(e => {
+                          let next = this.lastZoom * e.scale
+                          this.zoom = Math.min(5, Math.max(0.3, next))
+                        })
+                    )
+                  )
+              }
+
+
+              // === 裁剪模式 ===
+              if (this.cropMode) {
+                // 手势：拖出裁剪框
+                Stack()
+                  .width('100%')
+                  .height('100%')
+                  .backgroundColor(Color.Transparent)
+                  .gesture(
+                    PanGesture({ direction: PanDirection.All })
+                      .onActionStart(ev => {
+                        const f = ev.fingerList[0]
+                        this.cropStartX = f.localX
+                        this.cropStartY = f.localY
+                        this.cropEndX = f.localX
+                        this.cropEndY = f.localY
+                      })
+                      .onActionUpdate(ev => {
+                        const f = ev.fingerList[0]
+                        this.cropEndX = f.localX
+                        this.cropEndY = f.localY
+                      })
+                      .onActionEnd(() => {
+                        this.doCrop()
+                      })
+                  )
+
+                // 画裁剪框（UI）
+                Rect()
+                  .position({
+                    x: Math.min(this.cropStartX, this.cropEndX),
+                    y: Math.min(this.cropStartY, this.cropEndY)
+                  })
+                  .width(Math.abs(this.cropEndX - this.cropStartX))
+                  .height(Math.abs(this.cropEndY - this.cropStartY))
+                  .stroke(Color.Red)
+                  .strokeWidth(2)
+                  .fill('rgba(255,0,0,0.18)')
+              }
+
+            }
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .backgroundColor('#FFFFFF')
+          .borderRadius(12)
+          .padding(2)
+          .clip(true)
+          .onAreaChange((oldArea, newArea) => {
+            this.canvasWidth = Number(newArea.width)
+            this.canvasHeight = Number(newArea.height)
+          })
+
+
+          // 底部工具栏
+          Row({ space: 10 }) {
+            Text('鸿绘')
+              .fontSize(16)
+              .fontWeight(FontWeight.Medium)
+              .fontColor('#6B7280')
+              .layoutWeight(1)
+
+            Button('打开图片', { type: ButtonType.Capsule })
+              .height(40).padding({ left: 14, right: 14 })
+              .onClick(() => this.pickImage())
+
+            SaveButton({
+              icon: SaveIconStyle.FULL_FILLED,
+              text: SaveDescription.SAVE_IMAGE,
+              buttonType: ButtonType.Capsule
             })
+              .height(40)
+              .padding({ left: 14, right: 14 })
+              .onClick(async (event, result: SaveButtonOnClickResult) => {
+                if (result === SaveButtonOnClickResult.SUCCESS) {
+                  // 用户点了保存按钮，系统临时授予相册写入权限（约 5 秒）
+                  await this.saveImage()
+                } else {
+                  promptAction.showToast({ message: '授权失败，无法保存' })
+                }
+              })
 
-          Button('重置', { type: ButtonType.Capsule })
-            .height(40)
-            .padding({ left: 14, right: 14 })
-            .backgroundColor('#EEF2FF')
-            .fontColor('#3B82F6')
-            .onClick(() => this.resetView())
+            Button('重置', { type: ButtonType.Capsule })
+              .height(40)
+              .padding({ left: 14, right: 14 })
+              .backgroundColor('#EEF2FF')
+              .fontColor('#3B82F6')
+              .onClick(() => this.resetView())
+          }
+          .width('100%')
+          .padding({
+            left: 12,
+            right: 12,
+            top: 10,
+            bottom: 10
+          })
+          .backgroundColor('#F7F8FA')
+          .border({ width: { top: 0.5 }, color: '#E5E7EB' })
+          .alignItems(VerticalAlign.Center)
+
         }
-        .width('100%')
-        .padding({
-          left: 12,
-          right: 12,
-          top: 10,
-          bottom: 10
-        })
-        .backgroundColor('#F7F8FA')
-        .border({ width: { top: 0.5 }, color: '#E5E7EB' })
-        .alignItems(VerticalAlign.Center)
-
+        .width('100%').height('100%')
+        .backgroundColor('#FFFFFF')
+        .padding(12)
       }
-      .width('100%').height('100%')
-      .backgroundColor('#FFFFFF')
-      .padding(12)
-    }
     }
   }
+
   private async resetView() {
     // 重置视图参数（缩放 / 平移）
     this.zoom = 1.0
@@ -588,10 +648,94 @@ struct Index {
     }
   }
 
-  // 裁剪
-  private cropCenter() {
-    // 什么都不做
+  private async doCrop() {
+    if (!this.pixelMap) {
+      promptAction.showToast({ message: '请先打开图片' })
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info = await pm.getImageInfo()
+
+    // 求实际显示尺寸（考虑 contain + zoom）
+    const scaleBase = Math.min(
+      this.canvasWidth / info.size.width,
+      this.canvasHeight / info.size.height
+    )
+
+    const realW = info.size.width * scaleBase * this.zoom
+    const realH = info.size.height * scaleBase * this.zoom
+
+    // 图片左上角（受 offsetX/Y 影响）
+    const imageLeft = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop  = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    // UI 裁剪框（未裁边界前）
+    let uiX1 = Math.min(this.cropStartX, this.cropEndX)
+    let uiY1 = Math.min(this.cropStartY, this.cropEndY)
+    let uiX2 = Math.max(this.cropStartX, this.cropEndX)
+    let uiY2 = Math.max(this.cropStartY, this.cropEndY)
+
+    // 将裁剪框限制到图片所在区域
+    const imgX1 = imageLeft
+    const imgY1 = imageTop
+    const imgX2 = imageLeft + realW
+    const imgY2 = imageTop + realH
+
+    // 与图片显示区域求交集
+    uiX1 = Math.max(uiX1, imgX1)
+    uiY1 = Math.max(uiY1, imgY1)
+    uiX2 = Math.min(uiX2, imgX2)
+    uiY2 = Math.min(uiY2, imgY2)
+
+    // 若交集无效，直接结束
+    if (uiX2 <= uiX1 || uiY2 <= uiY1) {
+      promptAction.showToast({ message: '裁剪区域超出图片范围' })
+      this.cropMode = false
+      return
+    }
+
+    // 映射到像素坐标
+    const px1 = (uiX1 - imageLeft) * (info.size.width  / realW)
+    const py1 = (uiY1 - imageTop ) * (info.size.height / realH)
+    const px2 = (uiX2 - imageLeft) * (info.size.width  / realW)
+    const py2 = (uiY2 - imageTop ) * (info.size.height / realH)
+
+    const cropX = Math.max(0, Math.floor(px1))
+    const cropY = Math.max(0, Math.floor(py1))
+    const cropW = Math.floor(px2 - px1)
+    const cropH = Math.floor(py2 - py1)
+
+    if (cropW <= 0 || cropH <= 0) {
+      promptAction.showToast({ message: '裁剪区域太小' })
+      this.cropMode = false
+      return
+    }
+
+    // 执行裁剪
+    await pm.crop({
+      x: cropX,
+      y: cropY,
+      size: { width: cropW, height: cropH }
+    })
+
+    // 完成后复位
+    this.cropMode = false
+    this.zoom = 1
+    this.offsetX = 0
+    this.offsetY = 0
+    this.pixelVersion++
+
+    // 清空裁剪框，避免上次残留
+    this.cropStartX = 0
+    this.cropStartY = 0
+    this.cropEndX = 0
+    this.cropEndY = 0
+
+    promptAction.showToast({ message: '裁剪完成' })
   }
+
+
 
   // 向右旋转 90 度（顺时针）
   private async rotateRight90() {
@@ -691,7 +835,6 @@ struct Index {
     ]
   }
 
-
   // 把当前 brightnessLevel & contrastLevel 一起烘焙到 pixelMap 里
   // 注意：调用后会把 brightnessLevel / contrastLevel 归零，并触发一次刷新
   private async bakeToneToPixelMap(pm: image.PixelMap): Promise<void> {
@@ -782,7 +925,6 @@ struct Index {
     this.pixelVersion++ // 触发 Image 重新渲染一次
   }
 
-
   // 对比度调整
   private adjustContrast(delta: number) {
     if (!this.pixelMap) {
@@ -792,8 +934,8 @@ struct Index {
 
     this.contrastLevel += delta
 
-    const MAX_CONTRAST: number = 1.0   // 对比度增强上限
-    const MIN_CONTRAST: number = -1.0  // 对比度降低下限
+    const MAX_CONTRAST: number = 1.0 // 对比度增强上限
+    const MIN_CONTRAST: number = -1.0 // 对比度降低下限
 
     if (this.contrastLevel > MAX_CONTRAST) {
       this.contrastLevel = MAX_CONTRAST
@@ -826,6 +968,4 @@ struct Index {
     // 撤销逻辑以后再实现，这里先留空，保证编译通过
     console.info('undo() called — 撤销逻辑待实现')
   }
-
-
 }
