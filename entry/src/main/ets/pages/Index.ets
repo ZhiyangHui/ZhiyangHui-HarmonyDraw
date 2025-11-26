@@ -95,6 +95,11 @@ struct Index {
   private readonly historyLimit: number = 10
   // 新增：记录“打开图片时的原图快照”
   private originalPixelMap?: image.PixelMap = undefined
+  // ✅ 全局画笔样式（形状 + 画笔共享）
+  @State strokeWidth: number = 4 // 像素半径，细笔/粗笔一起改这个
+  @State strokeR: number = 0 // 默认黑色
+  @State strokeG: number = 0
+  @State strokeB: number = 0
 
   build() {
     Column() {
@@ -284,39 +289,108 @@ struct Index {
 
             } else if (this.currentMenu === 'brush') {
               Scroll() {
-                Row({ space: 8 }) {
+                Column() {
 
-                  Button('细笔', { type: ButtonType.Normal })
-                    .height(28)
-                    .fontSize(11)
-                    .backgroundColor(this.currentBrush === BrushTool.Pen ? '#FB923C' : '#FEF3C7')
-                    .fontColor(this.currentBrush === BrushTool.Pen ? '#FFFFFF' : '#92400E')
-                    .onClick(() => this.currentBrush = BrushTool.Pen)
+                  // ===== 第一行：粗细（细笔/粗笔/荧光） =====
+                  Row({ space: 8 }) {
 
-                  Button('粗笔', { type: ButtonType.Normal })
-                    .height(28)
-                    .fontSize(11)
-                    .backgroundColor(this.currentBrush === BrushTool.Highlighter ? '#FB923C' : '#FEF3C7')
-                    .fontColor(this.currentBrush === BrushTool.Highlighter ? '#FFFFFF' : '#92400E')
-                    .onClick(() => this.currentBrush = BrushTool.Highlighter)
+                    Button('细笔', { type: ButtonType.Normal })
+                      .height(28)
+                      .fontSize(11)
+                      .backgroundColor(this.currentBrush === BrushTool.Pen ? '#FB923C' : '#FEF3C7')
+                      .fontColor(this.currentBrush === BrushTool.Pen ? '#FFFFFF' : '#92400E')
+                      .onClick(() => {
+                        this.currentBrush = BrushTool.Pen
+                        // ✅ 全局粗细：形状 + 画笔都用这个
+                        this.strokeWidth = 3
+                      })
 
-                  Button('荧光', { type: ButtonType.Normal })
-                    .height(28)
-                    .fontSize(11)
-                    .backgroundColor(this.currentBrush === BrushTool.Eraser ? '#FB923C' : '#FEF3C7')
-                    .fontColor(this.currentBrush === BrushTool.Eraser ? '#FFFFFF' : '#92400E')
-                    .onClick(() => this.currentBrush = BrushTool.Eraser)
+                    Button('粗笔', { type: ButtonType.Normal })
+                      .height(28)
+                      .fontSize(11)
+                      .backgroundColor(this.currentBrush === BrushTool.Highlighter ? '#FB923C' : '#FEF3C7')
+                      .fontColor(this.currentBrush === BrushTool.Highlighter ? '#FFFFFF' : '#92400E')
+                      .onClick(() => {
+                        this.currentBrush = BrushTool.Highlighter
+                        this.strokeWidth = 7
+                      })
 
+                    Button('荧光', { type: ButtonType.Normal })
+                      .height(28)
+                      .fontSize(11)
+                      .backgroundColor(this.currentBrush === BrushTool.Eraser ? '#FB923C' : '#FEF3C7')
+                      .fontColor(this.currentBrush === BrushTool.Eraser ? '#FFFFFF' : '#92400E')
+                      .onClick(() => {
+                        this.currentBrush = BrushTool.Eraser
+                        this.strokeWidth = 10
+                      })
+                  }
+                  .height(32)
+                  .padding({ left: 4, right: 4, bottom: 4 })
+
+                  // ===== 第二行：颜色选择（全局颜色，形状 + 画笔通用） =====
+                  Row({ space: 8 }) {
+                    // 黑色
+                    Button('', { type: ButtonType.Normal })
+                      .width(24)
+                      .height(24)
+                      .backgroundColor('#000000')
+                      .borderRadius(12)
+                      .border({ width: 1, color: '#E5E7EB' })
+                      .onClick(() => {
+                        this.strokeR = 0
+                        this.strokeG = 0
+                        this.strokeB = 0
+                      })
+
+                    // 红色
+                    Button('', { type: ButtonType.Normal })
+                      .width(24)
+                      .height(24)
+                      .backgroundColor('#EF4444')
+                      .borderRadius(12)
+                      .border({ width: 1, color: '#E5E7EB' })
+                      .onClick(() => {
+                        this.strokeR = 239
+                        this.strokeG = 68
+                        this.strokeB = 68
+                      })
+
+                    // 绿色
+                    Button('', { type: ButtonType.Normal })
+                      .width(24)
+                      .height(24)
+                      .backgroundColor('#22C55E')
+                      .borderRadius(12)
+                      .border({ width: 1, color: '#E5E7EB' })
+                      .onClick(() => {
+                        this.strokeR = 34
+                        this.strokeG = 197
+                        this.strokeB = 94
+                      })
+
+                    // 蓝色
+                    Button('', { type: ButtonType.Normal })
+                      .width(24)
+                      .height(24)
+                      .backgroundColor('#3B82F6')
+                      .borderRadius(12)
+                      .border({ width: 1, color: '#E5E7EB' })
+                      .onClick(() => {
+                        this.strokeR = 59
+                        this.strokeG = 130
+                        this.strokeB = 246
+                      })
+                  }
+                  .height(32)
+                  .padding({ left: 4, right: 4 })
                 }
-                .height(32)
-                .padding({ left: 4, right: 4 })
               }
               .scrollable(ScrollDirection.Horizontal)
               .width('100%')
               .padding({ bottom: 8 })
             }
           }
-
 
           // 画布
           Stack() {
@@ -1223,8 +1297,7 @@ struct Index {
         break
     }
 
-    // 🔥 半径再大一点，画出来绝对明显
-    const radius: number = 8
+    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
 
     for (let yy: number = py - radius; yy <= py + radius; yy++) {
       if (yy < 0 || yy >= height) {
@@ -1247,11 +1320,11 @@ struct Index {
         const bIndex: number = baseIndex + bOffset
         const aIndex: number = baseIndex + aOffset
 
-        // ⚫ 纯黑色点
-        data[rIndex] = 0
-        data[gIndex] = 0
-        data[bIndex] = 0
+        data[rIndex] = this.strokeR
+        data[gIndex] = this.strokeG
+        data[bIndex] = this.strokeB
         data[aIndex] = 255
+
       }
     }
 
