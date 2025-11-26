@@ -95,11 +95,20 @@ struct Index {
   private readonly historyLimit: number = 10
   // 新增：记录“打开图片时的原图快照”
   private originalPixelMap?: image.PixelMap = undefined
-  // ✅ 全局画笔样式（形状 + 画笔共享）
+  //全局画笔样式（形状 + 画笔共享）
   @State strokeWidth: number = 4 // 像素半径，细笔/粗笔一起改这个
   @State strokeR: number = 0 // 默认黑色
   @State strokeG: number = 0
   @State strokeB: number = 0
+  // 直线工具内部状态
+  private hasLineStart: boolean = false
+  private lineStartPx: number = 0
+  private lineStartPy: number = 0
+  // 当前是否正在绘制一个形状（线、矩形、圆等）
+  private isShapeDrawing: boolean = false
+  // 通用形状绘制的起点（UI 坐标）
+  private shapeStartUiX: number = 0
+  private shapeStartUiY: number = 0
 
   build() {
     Column() {
@@ -290,10 +299,8 @@ struct Index {
             } else if (this.currentMenu === 'brush') {
               Scroll() {
                 Column() {
-
                   // ===== 第一行：粗细（细笔/粗笔/荧光） =====
                   Row({ space: 8 }) {
-
                     Button('细笔', { type: ButtonType.Normal })
                       .height(28)
                       .fontSize(11)
@@ -301,7 +308,7 @@ struct Index {
                       .fontColor(this.currentBrush === BrushTool.Pen ? '#FFFFFF' : '#92400E')
                       .onClick(() => {
                         this.currentBrush = BrushTool.Pen
-                        // ✅ 全局粗细：形状 + 画笔都用这个
+                        // 全局粗细：形状 + 画笔都用这个
                         this.strokeWidth = 3
                       })
 
@@ -430,36 +437,95 @@ struct Index {
                   .hitTestBehavior(HitTestMode.Transparent)
                   .gesture(
                     GestureGroup(GestureMode.Parallel,
-                      // 🟢 新增：点击手势，用来画点
+                      // 点击手势，用来画点
                       TapGesture()
-                        .onAction((ev: GestureEvent) => {
-                          // 只有在选中了“点”工具，且不是裁剪模式时才处理
-                          if (this.currentShape !== ShapeTool.Point || this.cropMode) {
-                            return
-                          }
-
+                        .onAction((ev) => {
                           if (!ev.fingerList || ev.fingerList.length === 0) {
                             return
                           }
-
                           const finger = ev.fingerList[0]
                           const x: number = finger.localX
                           const y: number = finger.localY
 
                           console.info(`>>> tap at x=${x}, y=${y}`)
-                          this.drawPointAtUi(x, y)
-                        }),
 
-                      // 原来的拖拽
+                          // 根据当前形状类型分发
+                          if (this.currentShape === ShapeTool.Point) {
+                            // 画点
+                            this.drawPointAtUi(x, y)
+                          }
+                        }),
+                      // ✅ 拖拽：平移画布 / 画直线 / 画矩形（通用版）
                       PanGesture({ direction: PanDirection.All })
                         .onActionStart(e => {
+                          // ✅ 当前是任意“拖拽绘制形状”的工具：直线 / 矩形 / 圆 / 椭圆
+                          if (this.currentShape === ShapeTool.Line ||
+                            this.currentShape === ShapeTool.Rect ||
+                            this.currentShape === ShapeTool.Circle ||
+                            this.currentShape === ShapeTool.Ellipse) {
+
+                            if (!e.fingerList || e.fingerList.length === 0) {
+                              return
+                            }
+                            const f = e.fingerList[0]
+                            this.isShapeDrawing = true
+                            this.shapeStartUiX = f.localX
+                            this.shapeStartUiY = f.localY
+                            console.info(`>>> shape start ui=(${this.shapeStartUiX}, ${this.shapeStartUiY})`)
+                            return
+                          }
+
+                          // 其他情况下：当成平移画布
                           this.lastPanX = this.offsetX
                           this.lastPanY = this.offsetY
                         })
                         .onActionUpdate(e => {
+                          // 正在画形状（线 / 矩形 / 圆 / 椭圆）时，不处理平移
+                          if (this.isShapeDrawing &&
+                            (this.currentShape === ShapeTool.Line ||
+                              this.currentShape === ShapeTool.Rect ||
+                              this.currentShape === ShapeTool.Circle ||
+                              this.currentShape === ShapeTool.Ellipse)) {
+                            return
+                          }
+
+                          // 正常平移画布
                           this.offsetX = this.lastPanX + e.offsetX
                           this.offsetY = this.lastPanY + e.offsetY
+                        })
+                        .onActionEnd(e => {
+                          if (this.isShapeDrawing &&
+                            (this.currentShape === ShapeTool.Line ||
+                              this.currentShape === ShapeTool.Rect ||
+                              this.currentShape === ShapeTool.Circle ||
+                              this.currentShape === ShapeTool.Ellipse)) {
+
+                            this.isShapeDrawing = false
+
+                            if (!e.fingerList || e.fingerList.length === 0) {
+                              return
+                            }
+                            const f = e.fingerList[0]
+                            const endUiX: number = f.localX
+                            const endUiY: number = f.localY
+
+                            console.info(
+                              `>>> shape end ui=(${endUiX}, ${endUiY}), start ui=(${this.shapeStartUiX}, ${this.shapeStartUiY})`
+                            )
+
+                            // ✅ 根据当前形状分发
+                            if (this.currentShape === ShapeTool.Line) {
+                              this.handleLineDrag(this.shapeStartUiX, this.shapeStartUiY, endUiX, endUiY)
+                            } else if (this.currentShape === ShapeTool.Rect) {
+                              this.handleRectDrag(this.shapeStartUiX, this.shapeStartUiY, endUiX, endUiY)
+                            } else if (this.currentShape === ShapeTool.Circle) {
+                              this.handleCircleDrag(this.shapeStartUiX, this.shapeStartUiY, endUiX, endUiY)
+                            } else if (this.currentShape === ShapeTool.Ellipse) {
+                              this.handleEllipseDrag(this.shapeStartUiX, this.shapeStartUiY, endUiX, endUiY)
+                            }
+                          }
                         }),
+
 
                       // 原来的缩放
                       PinchGesture()
@@ -1341,6 +1407,721 @@ struct Index {
     this.pixelMap = newPm
 
     // 通知 Image 重新渲染
+    this.pixelVersion++
+  }
+
+  // 直线工具：拖拽产生的起点/终点（UI 坐标），在这里转换成像素并画线
+  private async handleLineDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    // —— UI → 像素（复用你画点的映射逻辑） ——
+    const scaleBase: number = Math.min(
+      this.canvasWidth / info.size.width,
+      this.canvasHeight / info.size.height
+    )
+
+    const realW: number = info.size.width * scaleBase * this.zoom
+    const realH: number = info.size.height * scaleBase * this.zoom
+
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
+    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
+    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
+    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
+
+    const x0: number = Math.floor(startPxFloat)
+    const y0: number = Math.floor(startPyFloat)
+    const x1: number = Math.floor(endPxFloat)
+    const y1: number = Math.floor(endPyFloat)
+
+    console.info(
+      `>>> handleLineDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
+        `uiEnd=(${endUiX.toFixed(1)},${endUiY.toFixed(1)}) -> ` +
+        `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
+    )
+
+    // 简单边界判断
+    if (x0 < 0 || y0 < 0 || x0 >= info.size.width || y0 >= info.size.height ||
+      x1 < 0 || y1 < 0 || x1 >= info.size.width || y1 >= info.size.height) {
+      console.info('>>> handleLineDrag: line endpoints out of image range, skip')
+      return
+    }
+
+    // 1）在修改前压入撤销栈
+    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
+    await this.pushHistorySnapshot(true, backupPm)
+
+    // 2）真正按像素画线（带粗细 + 颜色）
+    await this.drawLineBetweenPixels(x0, y0, x1, y1)
+
+    promptAction.showToast({ message: '直线已绘制' })
+  }
+
+  private async drawLineBetweenPixels(x0: number, y0: number, x1: number, y1: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    const width: number = info.size.width
+    const height: number = info.size.height
+
+    if (x0 < 0 || y0 < 0 || x0 >= width || y0 >= height ||
+      x1 < 0 || y1 < 0 || x1 >= width || y1 >= height) {
+      return
+    }
+
+    const byteLength: number = pm.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await pm.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (info.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+
+    const drawThickPoint = (cx: number, cy: number) => {
+      for (let yy = cy - radius; yy <= cy + radius; yy++) {
+        if (yy < 0 || yy >= height) {
+          continue
+        }
+        for (let xx = cx - radius; xx <= cx + radius; xx++) {
+          if (xx < 0 || xx >= width) {
+            continue
+          }
+          const dx = xx - cx
+          const dy = yy - cy
+          if (dx * dx + dy * dy > radius * radius) {
+            continue
+          }
+
+          const baseIndex: number = (yy * width + xx) * 4
+          const rIndex: number = baseIndex + rOffset
+          const gIndex: number = baseIndex + gOffset
+          const bIndex: number = baseIndex + bOffset
+          const aIndex: number = baseIndex + aOffset
+
+          data[rIndex] = this.strokeR
+          data[gIndex] = this.strokeG
+          data[bIndex] = this.strokeB
+          data[aIndex] = 255
+        }
+      }
+    }
+
+    // Bresenham 画线
+    let curX: number = x0
+    let curY: number = y0
+    const dx: number = Math.abs(x1 - x0)
+    const sx: number = x0 < x1 ? 1 : -1
+    const dy: number = -Math.abs(y1 - y0)
+    const sy: number = y0 < y1 ? 1 : -1
+    let err: number = dx + dy
+
+    while (true) {
+      drawThickPoint(curX, curY)
+
+      if (curX === x1 && curY === y1) {
+        break
+      }
+
+      const e2: number = 2 * err
+      if (e2 >= dy) {
+        err += dy
+        curX += sx
+      }
+      if (e2 <= dx) {
+        err += dx
+        curY += sy
+      }
+    }
+
+    await pm.writeBufferToPixels(buffer)
+
+    // 为保证 UI 刷新：clone 一张新 PixelMap 替换当前的
+    const newPm: image.PixelMap = await this.clonePixelMap(pm)
+    if (this.pixelMap && this.pixelMap !== newPm) {
+      (this.pixelMap as image.PixelMap).release?.()
+    }
+    this.pixelMap = newPm
+
+    this.pixelVersion++
+  }
+
+  // 矩形工具：拖拽产生的起点/终点（UI 坐标），在这里转成像素并画矩形
+  private async handleRectDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    // —— UI → 像素（和画点 / 画直线保持完全一致的映射逻辑）——
+    const scaleBase: number = Math.min(
+      this.canvasWidth / info.size.width,
+      this.canvasHeight / info.size.height
+    )
+
+    const realW: number = info.size.width * scaleBase * this.zoom
+    const realH: number = info.size.height * scaleBase * this.zoom
+
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
+    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
+    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
+    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
+
+    const x0: number = Math.floor(startPxFloat)
+    const y0: number = Math.floor(startPyFloat)
+    const x1: number = Math.floor(endPxFloat)
+    const y1: number = Math.floor(endPyFloat)
+
+    console.info(
+      `>>> handleRectDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
+        `uiEnd=(${endUiX.toFixed(1)},${endUiY.toFixed(1)}) -> ` +
+        `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
+    )
+
+    // 这里不强制要求完全在图内，真正的边界裁剪交给 drawRectBetweenPixels 去做
+
+    // 1）修改前先把当前整图压入撤销栈（可撤回）
+    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
+    await this.pushHistorySnapshot(true, backupPm)
+
+    // 2）真正按像素画矩形边框（使用当前 stroke 宽度 + 颜色）
+    await this.drawRectBetweenPixels(x0, y0, x1, y1)
+
+    promptAction.showToast({ message: '矩形已绘制' })
+  }
+
+  // 在像素坐标里画一个矩形边框（使用当前 stroke 宽度和颜色）
+  private async drawRectBetweenPixels(x0: number, y0: number, x1: number, y1: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    const width: number = info.size.width
+    const height: number = info.size.height
+
+    // 归一化成左上 / 右下
+    let left: number = Math.min(x0, x1)
+    let right: number = Math.max(x0, x1)
+    let top: number = Math.min(y0, y1)
+    let bottom: number = Math.max(y0, y1)
+
+    // 裁剪在图片范围之内
+    left = Math.max(0, left)
+    right = Math.min(width - 1, right)
+    top = Math.max(0, top)
+    bottom = Math.min(height - 1, bottom)
+
+    if (left >= right || top >= bottom) {
+      console.info('>>> drawRectBetweenPixels: rect too small, skip')
+      return
+    }
+
+    // 1）读像素
+    const byteLength: number = pm.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await pm.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    // 2）确定通道顺序
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (info.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+
+    const drawThickPoint = (cx: number, cy: number) => {
+      for (let yy = cy - radius; yy <= cy + radius; yy++) {
+        if (yy < 0 || yy >= height) {
+          continue
+        }
+        for (let xx = cx - radius; xx <= cx + radius; xx++) {
+          if (xx < 0 || xx >= width) {
+            continue
+          }
+          const dx = xx - cx
+          const dy = yy - cy
+          if (dx * dx + dy * dy > radius * radius) {
+            continue
+          }
+
+          const baseIndex: number = (yy * width + xx) * 4
+          const rIndex: number = baseIndex + rOffset
+          const gIndex: number = baseIndex + gOffset
+          const bIndex: number = baseIndex + bOffset
+          const aIndex: number = baseIndex + aOffset
+
+          data[rIndex] = this.strokeR
+          data[gIndex] = this.strokeG
+          data[bIndex] = this.strokeB
+          data[aIndex] = 255
+        }
+      }
+    }
+
+    // 3）画四条边：上、下、左、右
+    for (let x = left; x <= right; x++) {
+      drawThickPoint(x, top) // 上边
+      drawThickPoint(x, bottom) // 下边
+    }
+    for (let y = top; y <= bottom; y++) {
+      drawThickPoint(left, y) // 左边
+      drawThickPoint(right, y) // 右边
+    }
+
+    // 4）写回像素
+    await pm.writeBufferToPixels(buffer)
+
+    // 5）为了保证 UI 刷新：clone 一份新的 PixelMap 替换当前的
+    const newPm: image.PixelMap = await this.clonePixelMap(pm)
+    if (this.pixelMap && this.pixelMap !== newPm) {
+      (this.pixelMap as image.PixelMap).release?.()
+    }
+    this.pixelMap = newPm
+
+    this.pixelVersion++
+  }
+
+  // 在像素坐标里画一个圆形边框（使用当前 stroke 宽度和颜色）
+  // 这里传入的是圆的外接正方形的左上 / 右下
+  private async drawCircleBetweenPixels(left: number, top: number, right: number, bottom: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    const width: number = info.size.width
+    const height: number = info.size.height
+
+    // 裁剪到图片范围
+    left = Math.max(0, left)
+    right = Math.min(width - 1, right)
+    top = Math.max(0, top)
+    bottom = Math.min(height - 1, bottom)
+
+    const w: number = right - left
+    const h: number = bottom - top
+    const side: number = Math.min(w, h)
+
+    if (side <= 0) {
+      console.info('>>> drawCircleBetweenPixels: side too small, skip')
+      return
+    }
+
+    // 重新保证 right / bottom 是正方形
+    right = left + side
+    bottom = top + side
+
+    const cx: number = Math.round((left + right) / 2)
+    const cy: number = Math.round((top + bottom) / 2)
+    const radius: number = side / 2
+
+    // 1）读像素
+    const byteLength: number = pm.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await pm.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    // 2）通道顺序
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (info.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    const thickRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+
+    const drawThickPoint = (px: number, py: number) => {
+      for (let yy = py - thickRadius; yy <= py + thickRadius; yy++) {
+        if (yy < 0 || yy >= height) {
+          continue
+        }
+        for (let xx = px - thickRadius; xx <= px + thickRadius; xx++) {
+          if (xx < 0 || xx >= width) {
+            continue
+          }
+          const dx = xx - px
+          const dy = yy - py
+          if (dx * dx + dy * dy > thickRadius * thickRadius) {
+            continue
+          }
+
+          const baseIndex: number = (yy * width + xx) * 4
+          const rIndex: number = baseIndex + rOffset
+          const gIndex: number = baseIndex + gOffset
+          const bIndex: number = baseIndex + bOffset
+          const aIndex: number = baseIndex + aOffset
+
+          data[rIndex] = this.strokeR
+          data[gIndex] = this.strokeG
+          data[bIndex] = this.strokeB
+          data[aIndex] = 255
+        }
+      }
+    }
+
+    // 3）用参数方程画一圈：x = cx + r cos t, y = cy + r sin t
+    const TWO_PI: number = Math.PI * 2
+    // 步数与半径成比例，保证越大越平滑
+    const steps: number = Math.max(36, Math.floor(TWO_PI * radius / 2))
+
+    for (let i = 0; i < steps; i++) {
+      const t: number = (TWO_PI * i) / steps
+      const px: number = Math.round(cx + radius * Math.cos(t))
+      const py: number = Math.round(cy + radius * Math.sin(t))
+
+      if (px < 0 || px >= width || py < 0 || py >= height) {
+        continue
+      }
+      drawThickPoint(px, py)
+    }
+
+    // 4）写回像素
+    await pm.writeBufferToPixels(buffer)
+
+    // 5）clone 一张新的 PixelMap 触发刷新
+    const newPm: image.PixelMap = await this.clonePixelMap(pm)
+    if (this.pixelMap && this.pixelMap !== newPm) {
+      (this.pixelMap as image.PixelMap).release?.()
+    }
+    this.pixelMap = newPm
+    this.pixelVersion++
+  }
+
+  // 圆形工具：拖拽产生的起点/终点（UI 坐标），转成像素并画圆
+  private async handleCircleDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    // —— UI → 像素（完全沿用你画点 / 直线 / 矩形的映射逻辑）——
+    const scaleBase: number = Math.min(
+      this.canvasWidth / info.size.width,
+      this.canvasHeight / info.size.height
+    )
+
+    const realW: number = info.size.width * scaleBase * this.zoom
+    const realH: number = info.size.height * scaleBase * this.zoom
+
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
+    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
+    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
+    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
+
+    const x0: number = Math.floor(startPxFloat)
+    const y0: number = Math.floor(startPyFloat)
+    const x1: number = Math.floor(endPxFloat)
+    const y1: number = Math.floor(endPyFloat)
+
+    console.info(
+      `>>> handleCircleDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
+        `uiEnd=(${endUiX.toFixed(1)},${endUiY.toFixed(1)}) -> ` +
+        `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
+    )
+
+    // 1）先求出拖出矩形的左/右/上/下
+    let left: number = Math.min(x0, x1)
+    let right: number = Math.max(x0, x1)
+    let top: number = Math.min(y0, y1)
+    let bottom: number = Math.max(y0, y1)
+
+    // 正方形边长 = min(宽, 高) —— 这样保证是“圆”而不是椭圆
+    const boxW: number = right - left
+    const boxH: number = bottom - top
+    const side: number = Math.min(Math.abs(boxW), Math.abs(boxH))
+
+    if (side <= 0) {
+      console.info('>>> handleCircleDrag: side too small, skip')
+      return
+    }
+
+    // 用左上角 + side 构造一个正方形区域
+    right = left + side
+    bottom = top + side
+
+    // 2）修改前压入撤销栈（整图快照）
+    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
+    await this.pushHistorySnapshot(true, backupPm)
+
+    // 3）真正画圆（用这个正方形的中心和半径）
+    await this.drawCircleBetweenPixels(left, top, right, bottom)
+
+    promptAction.showToast({ message: '圆形已绘制' })
+  }
+
+  // 椭圆工具：拖拽产生的起点/终点（UI 坐标），转成像素并画椭圆
+  private async handleEllipseDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    const scaleBase: number = Math.min(
+      this.canvasWidth / info.size.width,
+      this.canvasHeight / info.size.height
+    )
+
+    const realW: number = info.size.width * scaleBase * this.zoom
+    const realH: number = info.size.height * scaleBase * this.zoom
+
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
+    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
+    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
+    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
+
+    const x0: number = Math.floor(startPxFloat)
+    const y0: number = Math.floor(startPyFloat)
+    const x1: number = Math.floor(endPxFloat)
+    const y1: number = Math.floor(endPyFloat)
+
+    console.info(
+      `>>> handleEllipseDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
+        `uiEnd=(${endUiX.toFixed(1)},${endUiY.toFixed(1)}) -> ` +
+        `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
+    )
+
+    let left: number = Math.min(x0, x1)
+    let right: number = Math.max(x0, x1)
+    let top: number = Math.min(y0, y1)
+    let bottom: number = Math.max(y0, y1)
+
+    if (right - left <= 0 || bottom - top <= 0) {
+      console.info('>>> handleEllipseDrag: rect too small, skip')
+      return
+    }
+
+    // 1）修改前压入撤销栈
+    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
+    await this.pushHistorySnapshot(true, backupPm)
+
+    // 2）真正在像素里画椭圆
+    await this.drawEllipseBetweenPixels(left, top, right, bottom)
+
+    promptAction.showToast({ message: '椭圆已绘制' })
+  }
+
+  // 在像素坐标里画一个椭圆边框（使用当前 stroke 宽度和颜色）
+  // 传入的是椭圆外接矩形左上 / 右下
+  private async drawEllipseBetweenPixels(left: number, top: number, right: number, bottom: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    const width: number = info.size.width
+    const height: number = info.size.height
+
+    // 裁剪到图片范围
+    left = Math.max(0, left)
+    right = Math.min(width - 1, right)
+    top = Math.max(0, top)
+    bottom = Math.min(height - 1, bottom)
+
+    const w: number = right - left
+    const h: number = bottom - top
+
+    if (w <= 0 || h <= 0) {
+      console.info('>>> drawEllipseBetweenPixels: rect too small, skip')
+      return
+    }
+
+    const cx: number = Math.round((left + right) / 2)
+    const cy: number = Math.round((top + bottom) / 2)
+    const rx: number = w / 2
+    const ry: number = h / 2
+
+    // 1）读像素
+    const byteLength: number = pm.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await pm.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    // 2）通道顺序
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (info.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    const thickRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+
+    const drawThickPoint = (px: number, py: number) => {
+      for (let yy = py - thickRadius; yy <= py + thickRadius; yy++) {
+        if (yy < 0 || yy >= height) {
+          continue
+        }
+        for (let xx = px - thickRadius; xx <= px + thickRadius; xx++) {
+          if (xx < 0 || xx >= width) {
+            continue
+          }
+          const dx = xx - px
+          const dy = yy - py
+          if (dx * dx + dy * dy > thickRadius * thickRadius) {
+            continue
+          }
+
+          const baseIndex: number = (yy * width + xx) * 4
+          const rIndex: number = baseIndex + rOffset
+          const gIndex: number = baseIndex + gOffset
+          const bIndex: number = baseIndex + bOffset
+          const aIndex: number = baseIndex + aOffset
+
+          data[rIndex] = this.strokeR
+          data[gIndex] = this.strokeG
+          data[bIndex] = this.strokeB
+          data[aIndex] = 255
+        }
+      }
+    }
+
+    // 3）参数方程椭圆：x = cx + rx cos t, y = cy + ry sin t
+    const TWO_PI: number = Math.PI * 2
+    const maxR: number = Math.max(rx, ry)
+    const steps: number = Math.max(36, Math.floor(TWO_PI * maxR / 2))
+
+    for (let i = 0; i < steps; i++) {
+      const t: number = (TWO_PI * i) / steps
+      const px: number = Math.round(cx + rx * Math.cos(t))
+      const py: number = Math.round(cy + ry * Math.sin(t))
+
+      if (px < 0 || px >= width || py < 0 || py >= height) {
+        continue
+      }
+      drawThickPoint(px, py)
+    }
+
+    // 4）写回像素
+    await pm.writeBufferToPixels(buffer)
+
+    // 5）clone 一张新的 PixelMap 触发刷新
+    const newPm: image.PixelMap = await this.clonePixelMap(pm)
+    if (this.pixelMap && this.pixelMap !== newPm) {
+      (this.pixelMap as image.PixelMap).release?.()
+    }
+    this.pixelMap = newPm
     this.pixelVersion++
   }
 }
