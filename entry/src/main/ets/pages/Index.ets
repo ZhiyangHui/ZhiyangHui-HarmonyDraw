@@ -93,7 +93,7 @@ struct Index {
   private history: Array<CanvasSnapshot> = []
   private historyIndex: number = -1
   private readonly historyLimit: number = 10
-  // 🔹 新增：记录“打开图片时的原图快照”
+  // 新增：记录“打开图片时的原图快照”
   private originalPixelMap?: image.PixelMap = undefined
 
   build() {
@@ -356,6 +356,27 @@ struct Index {
                   .hitTestBehavior(HitTestMode.Transparent)
                   .gesture(
                     GestureGroup(GestureMode.Parallel,
+                      // 🟢 新增：点击手势，用来画点
+                      TapGesture()
+                        .onAction((ev: GestureEvent) => {
+                          // 只有在选中了“点”工具，且不是裁剪模式时才处理
+                          if (this.currentShape !== ShapeTool.Point || this.cropMode) {
+                            return
+                          }
+
+                          if (!ev.fingerList || ev.fingerList.length === 0) {
+                            return
+                          }
+
+                          const finger = ev.fingerList[0]
+                          const x: number = finger.localX
+                          const y: number = finger.localY
+
+                          console.info(`>>> tap at x=${x}, y=${y}`)
+                          this.drawPointAtUi(x, y)
+                        }),
+
+                      // 原来的拖拽
                       PanGesture({ direction: PanDirection.All })
                         .onActionStart(e => {
                           this.lastPanX = this.offsetX
@@ -366,6 +387,7 @@ struct Index {
                           this.offsetY = this.lastPanY + e.offsetY
                         }),
 
+                      // 原来的缩放
                       PinchGesture()
                         .onActionStart(e => {
                           this.lastZoom = this.zoom
@@ -514,6 +536,7 @@ struct Index {
   private async pushHistorySnapshot(includePixel: boolean, pmForSnapshot?: image.PixelMap): Promise<void> {
     let snapshotPixel: image.PixelMap | undefined = undefined
 
+    // 是否包含像素快照
     if (includePixel && pmForSnapshot) {
       snapshotPixel = pmForSnapshot
     }
@@ -521,12 +544,12 @@ struct Index {
     // 如果已经撤销到中间，再做新操作，则砍掉“未来”分支
     if (this.historyIndex >= 0 && this.historyIndex < this.history.length - 1) {
       for (let i = this.historyIndex + 1; i < this.history.length; i++) {
-        // 只释放真正不再需要的快照图像
         this.history[i].pixelMap?.release?.()
       }
       this.history = this.history.slice(0, this.historyIndex + 1)
     }
 
+    // 直接 push，不做任何上限限制
     this.history.push({
       pixelMap: snapshotPixel,
       zoom: this.zoom,
@@ -537,12 +560,7 @@ struct Index {
       accumulatedRotate: this.accumulatedRotate
     })
 
-    // 控制历史长度
-    if (this.history.length > this.historyLimit) {
-      const removed = this.history.shift()
-      removed?.pixelMap?.release?.()
-    }
-
+    // 永远指向最新
     this.historyIndex = this.history.length - 1
   }
 
@@ -1115,6 +1133,141 @@ struct Index {
     this.contrastLevel = snapshot.contrastLevel
     this.accumulatedRotate = snapshot.accumulatedRotate
 
+    this.pixelVersion++
+  }
+
+  // 在当前 pixelMap 上画一个点（uiX/uiY 是画布上的点击坐标）
+  private async drawPointAtUi(uiX: number, uiY: number) {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    // 1）算出当前图片在画布上的实际显示尺寸（contain + zoom）
+    const scaleBase: number = Math.min(
+      this.canvasWidth / info.size.width,
+      this.canvasHeight / info.size.height
+    )
+
+    const realW: number = info.size.width * scaleBase * this.zoom
+    const realH: number = info.size.height * scaleBase * this.zoom
+
+    // 图片左上角在画布中的位置（考虑平移 offsetX/Y）
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    // 2）把 UI 坐标映射到像素坐标
+    const pxFloat: number = (uiX - imageLeft) * (info.size.width / realW)
+    const pyFloat: number = (uiY - imageTop) * (info.size.height / realH)
+
+    const px: number = Math.floor(pxFloat)
+    const py: number = Math.floor(pyFloat)
+
+    console.info(
+      `>>> drawPointAtUi ui=(${uiX.toFixed(1)},${uiY.toFixed(1)}) ` +
+        `-> pixel=(${px},${py}), imgSize=(${info.size.width},${info.size.height})`
+    )
+
+    // 点在图片外面就不用画
+    if (px < 0 || py < 0 || px >= info.size.width || py >= info.size.height) {
+      console.info('>>> drawPointAtUi: pixel out of range, skip')
+      return
+    }
+
+    // 3）先把当前图克隆一份进历史栈，方便撤销
+    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
+    await this.pushHistorySnapshot(true, backupPm)
+
+    // 4）读出像素数据
+    const byteLength: number = pm.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await pm.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    // 打一行 log 看看每像素字节数
+    const width: number = info.size.width
+    const height: number = info.size.height
+    const bpp: number = byteLength / (width * height)
+    console.info(`>>> pixelFormat=${info.pixelFormat}, bytesPerPixel=${bpp}`)
+
+    // 像素格式判断，确定 RGBA 顺序
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (info.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        // B G R A
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        // A R G B
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+      // R G B A
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    // 🔥 半径再大一点，画出来绝对明显
+    const radius: number = 8
+
+    for (let yy: number = py - radius; yy <= py + radius; yy++) {
+      if (yy < 0 || yy >= height) {
+        continue
+      }
+      for (let xx: number = px - radius; xx <= px + radius; xx++) {
+        if (xx < 0 || xx >= width) {
+          continue
+        }
+
+        const dx: number = xx - px
+        const dy: number = yy - py
+        if (dx * dx + dy * dy > radius * radius) {
+          continue
+        }
+
+        const baseIndex: number = (yy * width + xx) * 4
+        const rIndex: number = baseIndex + rOffset
+        const gIndex: number = baseIndex + gOffset
+        const bIndex: number = baseIndex + bOffset
+        const aIndex: number = baseIndex + aOffset
+
+        // ⚫ 纯黑色点
+        data[rIndex] = 0
+        data[gIndex] = 0
+        data[bIndex] = 0
+        data[aIndex] = 255
+      }
+    }
+
+    // 5）把修改后的像素写回原 pixelMap
+    await pm.writeBufferToPixels(buffer)
+
+    // 6）为了完全确保 UI 刷新：再 clone 一份新的 PixelMap 赋给 this.pixelMap
+    const newPm: image.PixelMap = await this.clonePixelMap(pm)
+
+    // 释放旧的 this.pixelMap，避免泄露
+    if (this.pixelMap && this.pixelMap !== newPm) {
+      (this.pixelMap as image.PixelMap).release?.()
+    }
+    this.pixelMap = newPm
+
+    // 通知 Image 重新渲染
     this.pixelVersion++
   }
 }
