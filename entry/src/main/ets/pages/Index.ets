@@ -100,15 +100,20 @@ struct Index {
   @State strokeR: number = 0 // 默认黑色
   @State strokeG: number = 0
   @State strokeB: number = 0
-  // 直线工具内部状态
-  private hasLineStart: boolean = false
-  private lineStartPx: number = 0
-  private lineStartPy: number = 0
   // 当前是否正在绘制一个形状（线、矩形、圆等）
   private isShapeDrawing: boolean = false
   // 通用形状绘制的起点（UI 坐标）
   private shapeStartUiX: number = 0
   private shapeStartUiY: number = 0
+  // 自由绘制状态（形状 = ShapeTool.FreeDraw 时使用）
+  private isFreeDrawing: boolean = false
+  private freeLastUiX: number = 0
+  private freeLastUiY: number = 0
+  // 自由画开始时缓存原图像素
+  private freeDrawBuffer: Uint8Array | null = null
+  private freeDrawArrayBuffer: ArrayBuffer | null = null
+  private freeDrawByteLength: number = 0
+  private freeBufferReady: boolean = false
 
   build() {
     Column() {
@@ -437,9 +442,10 @@ struct Index {
                   .hitTestBehavior(HitTestMode.Transparent)
                   .gesture(
                     GestureGroup(GestureMode.Parallel,
-                      // 点击手势，用来画点
+
+                      // 点击：画点
                       TapGesture()
-                        .onAction((ev) => {
+                        .onAction((ev: GestureEvent) => {
                           if (!ev.fingerList || ev.fingerList.length === 0) {
                             return
                           }
@@ -449,25 +455,41 @@ struct Index {
 
                           console.info(`>>> tap at x=${x}, y=${y}`)
 
-                          // 根据当前形状类型分发
                           if (this.currentShape === ShapeTool.Point) {
-                            // 画点
                             this.drawPointAtUi(x, y)
                           }
                         }),
-                      // ✅ 拖拽：平移画布 / 画直线 / 画矩形（通用版）
+
+                      // 拖拽：平移 / 直线 / 矩形 / 圆 / 椭圆 / 自由画
                       PanGesture({ direction: PanDirection.All })
                         .onActionStart(e => {
-                          // ✅ 当前是任意“拖拽绘制形状”的工具：直线 / 矩形 / 圆 / 椭圆
+                          if (!e.fingerList || e.fingerList.length === 0) {
+                            return
+                          }
+                          const f = e.fingerList[0]
+
+                          if (this.currentShape === ShapeTool.FreeDraw) {
+                            this.isFreeDrawing = true
+                            this.freeLastUiX = f.localX
+                            this.freeLastUiY = f.localY
+
+                            // 异步准备 buffer（不能 await）
+                            this.prepareFreeDrawBuffer()
+
+                            // 存一次快照方便撤销整笔
+                            if (this.pixelMap) {
+                              this.clonePixelMap(this.pixelMap as image.PixelMap)
+                                .then(pmBackup => this.pushHistorySnapshot(true, pmBackup))
+                            }
+                            return
+                          }
+
+
+                          // ✅ 情况 2：直线 / 矩形 / 圆 / 椭圆：拖出一个形状
                           if (this.currentShape === ShapeTool.Line ||
                             this.currentShape === ShapeTool.Rect ||
                             this.currentShape === ShapeTool.Circle ||
                             this.currentShape === ShapeTool.Ellipse) {
-
-                            if (!e.fingerList || e.fingerList.length === 0) {
-                              return
-                            }
-                            const f = e.fingerList[0]
                             this.isShapeDrawing = true
                             this.shapeStartUiX = f.localX
                             this.shapeStartUiY = f.localY
@@ -475,12 +497,30 @@ struct Index {
                             return
                           }
 
-                          // 其他情况下：当成平移画布
+                          // ✅ 情况 3：其他情况 → 当成平移画布
                           this.lastPanX = this.offsetX
                           this.lastPanY = this.offsetY
                         })
                         .onActionUpdate(e => {
-                          // 正在画形状（线 / 矩形 / 圆 / 椭圆）时，不处理平移
+                          if (!e.fingerList || e.fingerList.length === 0) {
+                            return
+                          }
+                          const f = e.fingerList[0]
+
+                          if (this.isFreeDrawing && this.currentShape === ShapeTool.FreeDraw) {
+                            this.drawFreeStrokeSegmentSync(
+                              this.freeLastUiX,
+                              this.freeLastUiY,
+                              f.localX,
+                              f.localY
+                            )
+
+                            this.freeLastUiX = f.localX
+                            this.freeLastUiY = f.localY
+                            return
+                          }
+
+                          // 👉 正在画图形（线 / 矩形 / 圆 / 椭圆）时，不平移
                           if (this.isShapeDrawing &&
                             (this.currentShape === ShapeTool.Line ||
                               this.currentShape === ShapeTool.Rect ||
@@ -489,11 +529,30 @@ struct Index {
                             return
                           }
 
-                          // 正常平移画布
+                          // 👉 否则：平移画布
                           this.offsetX = this.lastPanX + e.offsetX
                           this.offsetY = this.lastPanY + e.offsetY
                         })
-                        .onActionEnd(e => {
+                        .onActionEnd((e: GestureEvent) => {
+                          // 自由画结束
+                          if (this.isFreeDrawing && this.currentShape === ShapeTool.FreeDraw) {
+                            this.handleFreeDrawEnd()
+                            return
+                          }
+
+                          // 图形结束
+                          if (!e.fingerList || e.fingerList.length === 0) {
+                            this.isShapeDrawing = false
+                            return
+                          }
+
+                          const f = e.fingerList[0] // ← 已去掉 GestureFinger
+
+                          const endUiX: number = f.localX
+                          const endUiY: number = f.localY
+
+
+                          // ③ 图形结束：直线 / 矩形 / 圆 / 椭圆
                           if (this.isShapeDrawing &&
                             (this.currentShape === ShapeTool.Line ||
                               this.currentShape === ShapeTool.Rect ||
@@ -502,18 +561,6 @@ struct Index {
 
                             this.isShapeDrawing = false
 
-                            if (!e.fingerList || e.fingerList.length === 0) {
-                              return
-                            }
-                            const f = e.fingerList[0]
-                            const endUiX: number = f.localX
-                            const endUiY: number = f.localY
-
-                            console.info(
-                              `>>> shape end ui=(${endUiX}, ${endUiY}), start ui=(${this.shapeStartUiX}, ${this.shapeStartUiY})`
-                            )
-
-                            // ✅ 根据当前形状分发
                             if (this.currentShape === ShapeTool.Line) {
                               this.handleLineDrag(this.shapeStartUiX, this.shapeStartUiY, endUiX, endUiY)
                             } else if (this.currentShape === ShapeTool.Rect) {
@@ -525,9 +572,7 @@ struct Index {
                             }
                           }
                         }),
-
-
-                      // 原来的缩放
+                      // 缩放：保持原来的逻辑
                       PinchGesture()
                         .onActionStart(e => {
                           this.lastZoom = this.zoom
@@ -2123,5 +2168,219 @@ struct Index {
     }
     this.pixelMap = newPm
     this.pixelVersion++
+  }
+
+  // 在自由绘制时，每一小段手势移动，实时画到内存 buffer 里（同步）
+  private drawFreeStrokeSegmentSync(
+    prevUiX: number,
+    prevUiY: number,
+    curUiX: number,
+    curUiY: number
+  ): void {
+    if (!this.pixelMap || !this.freeDrawBuffer || !this.freeDrawArrayBuffer) {
+      return
+    }
+
+    const pm: image.PixelMap = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = pm.getImageInfoSync()
+
+    const imgW: number = info.size.width
+    const imgH: number = info.size.height
+
+    // UI → 像素映射
+    const scaleBase: number = Math.min(
+      this.canvasWidth / imgW,
+      this.canvasHeight / imgH
+    )
+    const realW: number = imgW * scaleBase * this.zoom
+    const realH: number = imgH * scaleBase * this.zoom
+
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    const x0: number = Math.floor((prevUiX - imageLeft) * (imgW / realW))
+    const y0: number = Math.floor((prevUiY - imageTop) * (imgH / realH))
+    const x1: number = Math.floor((curUiX - imageLeft) * (imgW / realW))
+    const y1: number = Math.floor((curUiY - imageTop) * (imgH / realH))
+
+    // 越界直接丢弃这段
+    if (
+      x0 < 0 || x0 >= imgW || y0 < 0 || y0 >= imgH ||
+        x1 < 0 || x1 >= imgW || y1 < 0 || y1 >= imgH
+    ) {
+      return
+    }
+
+    // ⭐ 真正画到 freeDrawBuffer（同步、不 await）
+    this.drawLineIntoBuffer(
+      x0,
+      y0,
+      x1,
+      y1,
+      this.freeDrawBuffer as Uint8Array,
+      imgW,
+      imgH,
+      info.pixelFormat
+    )
+  }
+
+  // 在给定的像素缓冲区里画一条“带粗细的线段”（自由画专用，完全同步）
+  // x0,y0,x1,y1 是像素坐标；buffer 是整张图的 BGRA/ARGB/RGBA 像素数据
+  private drawLineIntoBuffer(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    buffer: Uint8Array,
+    imgW: number,
+    imgH: number,
+    pixelFormat: image.PixelMapFormat
+  ): void {
+    const width: number = imgW
+    const height: number = imgH
+
+    // 通道偏移
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        // B G R A
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        // A R G B
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+      // R G B A
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+
+    const drawThickPoint = (cx: number, cy: number): void => {
+      for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
+        if (yy < 0 || yy >= height) {
+          continue
+        }
+        for (let xx: number = cx - radius; xx <= cx + radius; xx++) {
+          if (xx < 0 || xx >= width) {
+            continue
+          }
+
+          const dx: number = xx - cx
+          const dy: number = yy - cy
+          if (dx * dx + dy * dy > radius * radius) {
+            continue
+          }
+
+          const baseIndex: number = (yy * width + xx) * 4
+          const rIndex: number = baseIndex + rOffset
+          const gIndex: number = baseIndex + gOffset
+          const bIndex: number = baseIndex + bOffset
+          const aIndex: number = baseIndex + aOffset
+
+          if (aIndex >= buffer.length) {
+            // 理论上不会越界，保险起见
+            continue
+          }
+
+          buffer[rIndex] = this.strokeR
+          buffer[gIndex] = this.strokeG
+          buffer[bIndex] = this.strokeB
+          buffer[aIndex] = 255
+        }
+      }
+    }
+
+    // Bresenham 画线（和你前面 drawLineBetweenPixels 一致的思路）
+    let curX: number = x0
+    let curY: number = y0
+    const dx: number = Math.abs(x1 - x0)
+    const sx: number = x0 < x1 ? 1 : -1
+    const dy: number = -Math.abs(y1 - y0)
+    const sy: number = y0 < y1 ? 1 : -1
+    let err: number = dx + dy
+
+    while (true) {
+      drawThickPoint(curX, curY)
+
+      if (curX === x1 && curY === y1) {
+        break
+      }
+
+      const e2: number = 2 * err
+      if (e2 >= dy) {
+        err += dy
+        curX += sx
+      }
+      if (e2 <= dx) {
+        err += dx
+        curY += sy
+      }
+    }
+  }
+
+  private async prepareFreeDrawBuffer() {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm = this.pixelMap as image.PixelMap
+
+    this.freeBufferReady = false
+
+    this.freeDrawByteLength = pm.getPixelBytesNumber()
+    this.freeDrawArrayBuffer = new ArrayBuffer(this.freeDrawByteLength)
+
+    // 异步读取像素（不能在手势里 await）
+    pm.readPixelsToBuffer(this.freeDrawArrayBuffer).then(() => {
+      this.freeDrawBuffer = new Uint8Array(this.freeDrawArrayBuffer!)
+      this.freeBufferReady = true
+    })
+  }
+
+  private async handleFreeDrawEnd(): Promise<void> {
+    // 这里不再检查 isFreeDrawing，只检查当前工具 & pixelMap
+    if (this.currentShape !== ShapeTool.FreeDraw || !this.pixelMap) {
+      return
+    }
+
+    this.isFreeDrawing = false
+
+    const pm: image.PixelMap = this.pixelMap as image.PixelMap
+
+    // 1) 把最后的内存 buffer 写回 pixelMap
+    if (this.freeDrawArrayBuffer) {
+      await pm.writeBufferToPixels(this.freeDrawArrayBuffer)
+    }
+
+    // 2) clone 一份新的 PixelMap —— 触发真正的 UI 刷新
+    const newPm: image.PixelMap = await this.clonePixelMap(pm)
+
+    if (this.pixelMap && this.pixelMap !== newPm) {
+      (this.pixelMap as image.PixelMap).release?.()
+    }
+
+    this.pixelMap = newPm
+    this.pixelVersion++ // Image() 会刷新
+
+    // 3) 清空缓存
+    this.freeDrawBuffer = null
+    this.freeDrawArrayBuffer = null
   }
 }
