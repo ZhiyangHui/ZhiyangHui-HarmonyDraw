@@ -100,6 +100,7 @@ struct Index {
   @State strokeR: number = 0 // 默认黑色
   @State strokeG: number = 0
   @State strokeB: number = 0
+  @State strokeOpacity: number = 1.0 // 0.0 ~ 1.0 画笔透明度（暂时只作为 UI）
   // 当前是否正在绘制一个形状（线、矩形、圆等）
   private isShapeDrawing: boolean = false
   // 通用形状绘制的起点（UI 坐标）
@@ -304,43 +305,79 @@ struct Index {
             } else if (this.currentMenu === 'brush') {
               Scroll() {
                 Column() {
-                  // ===== 第一行：粗细（细笔/粗笔/荧光） =====
+
+                  // ===== 第 1 行：橡皮擦 =====
                   Row({ space: 8 }) {
-                    Button('细笔', { type: ButtonType.Normal })
-                      .height(28)
-                      .fontSize(11)
-                      .backgroundColor(this.currentBrush === BrushTool.Pen ? '#FB923C' : '#FEF3C7')
-                      .fontColor(this.currentBrush === BrushTool.Pen ? '#FFFFFF' : '#92400E')
-                      .onClick(() => {
-                        this.currentBrush = BrushTool.Pen
-                        // 全局粗细：形状 + 画笔都用这个
-                        this.strokeWidth = 3
-                      })
-
-                    Button('粗笔', { type: ButtonType.Normal })
-                      .height(28)
-                      .fontSize(11)
-                      .backgroundColor(this.currentBrush === BrushTool.Highlighter ? '#FB923C' : '#FEF3C7')
-                      .fontColor(this.currentBrush === BrushTool.Highlighter ? '#FFFFFF' : '#92400E')
-                      .onClick(() => {
-                        this.currentBrush = BrushTool.Highlighter
-                        this.strokeWidth = 7
-                      })
-
-                    Button('荧光', { type: ButtonType.Normal })
+                    Button('橡皮擦', { type: ButtonType.Normal })
                       .height(28)
                       .fontSize(11)
                       .backgroundColor(this.currentBrush === BrushTool.Eraser ? '#FB923C' : '#FEF3C7')
                       .fontColor(this.currentBrush === BrushTool.Eraser ? '#FFFFFF' : '#92400E')
                       .onClick(() => {
                         this.currentBrush = BrushTool.Eraser
-                        this.strokeWidth = 10
                       })
                   }
                   .height(32)
                   .padding({ left: 4, right: 4, bottom: 4 })
 
-                  // ===== 第二行：颜色选择（全局颜色，形状 + 画笔通用） =====
+
+                  // ===== 第 2 行：粗细调节 Slider =====
+                  Row({ space: 8 }) {
+                    Text('粗细')
+                      .fontSize(11)
+                      .fontColor('#4B5563')
+                      .width(36)
+
+                    Slider({
+                      value: this.strokeWidth,
+                      min: 1,
+                      max: 40,
+                      step: 1
+                    })
+                      .width('60%')
+                      .onChange((value: number) => {
+                        this.strokeWidth = value
+                      })
+
+                    Text(`${this.strokeWidth.toFixed(0)} px`)
+                      .fontSize(10)
+                      .fontColor('#6B7280')
+                      .width(40)
+                  }
+                  .height(32)
+                  .padding({ left: 4, right: 4, bottom: 4 })
+                  .alignItems(VerticalAlign.Center)
+
+
+                  // ===== 第 3 行：透明度 Slider =====
+                  Row({ space: 8 }) {
+                    Text('透明度')
+                      .fontSize(11)
+                      .fontColor('#4B5563')
+                      .width(36)
+
+                    Slider({
+                      value: this.strokeOpacity,
+                      min: 0.1, // 最低 10%，防止完全看不见
+                      max: 1.0,
+                      step: 0.05
+                    })
+                      .width('60%')
+                      .onChange((value: number) => {
+                        this.strokeOpacity = value
+                      })
+
+                    Text(`${Math.round(this.strokeOpacity * 100)}%`)
+                      .fontSize(10)
+                      .fontColor('#6B7280')
+                      .width(40)
+                  }
+                  .height(32)
+                  .padding({ left: 4, right: 4, bottom: 4 })
+                  .alignItems(VerticalAlign.Center)
+
+
+                  // ===== 第 4 行：颜色选择（全局颜色，形状 + 画笔共用） =====
                   Row({ space: 8 }) {
                     // 黑色
                     Button('', { type: ButtonType.Normal })
@@ -396,6 +433,7 @@ struct Index {
                   }
                   .height(32)
                   .padding({ left: 4, right: 4 })
+
                 }
               }
               .scrollable(ScrollDirection.Horizontal)
@@ -1431,11 +1469,12 @@ struct Index {
         const bIndex: number = baseIndex + bOffset
         const aIndex: number = baseIndex + aOffset
 
+        const alpha: number = this.getStrokeAlpha()
+
         data[rIndex] = this.strokeR
         data[gIndex] = this.strokeG
         data[bIndex] = this.strokeB
-        data[aIndex] = 255
-
+        data[aIndex] = alpha
       }
     }
 
@@ -1558,6 +1597,7 @@ struct Index {
     }
 
     const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    const alpha: number = this.getStrokeAlpha()
 
     const drawThickPoint = (cx: number, cy: number) => {
       for (let yy = cy - radius; yy <= cy + radius; yy++) {
@@ -1583,7 +1623,8 @@ struct Index {
           data[rIndex] = this.strokeR
           data[gIndex] = this.strokeG
           data[bIndex] = this.strokeB
-          data[aIndex] = 255
+          data[aIndex] = alpha
+
         }
       }
     }
@@ -1740,7 +1781,7 @@ struct Index {
     }
 
     const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
-
+    const alpha: number = this.getStrokeAlpha()
     const drawThickPoint = (cx: number, cy: number) => {
       for (let yy = cy - radius; yy <= cy + radius; yy++) {
         if (yy < 0 || yy >= height) {
@@ -1765,7 +1806,8 @@ struct Index {
           data[rIndex] = this.strokeR
           data[gIndex] = this.strokeG
           data[bIndex] = this.strokeB
-          data[aIndex] = 255
+          data[aIndex] = alpha
+
         }
       }
     }
@@ -1864,7 +1906,7 @@ struct Index {
     }
 
     const thickRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
-
+    const alpha: number = this.getStrokeAlpha()
     const drawThickPoint = (px: number, py: number) => {
       for (let yy = py - thickRadius; yy <= py + thickRadius; yy++) {
         if (yy < 0 || yy >= height) {
@@ -1889,7 +1931,7 @@ struct Index {
           data[rIndex] = this.strokeR
           data[gIndex] = this.strokeG
           data[bIndex] = this.strokeB
-          data[aIndex] = 255
+          data[aIndex] = alpha
         }
       }
     }
@@ -2112,7 +2154,7 @@ struct Index {
     }
 
     const thickRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
-
+    const alpha: number = this.getStrokeAlpha()
     const drawThickPoint = (px: number, py: number) => {
       for (let yy = py - thickRadius; yy <= py + thickRadius; yy++) {
         if (yy < 0 || yy >= height) {
@@ -2137,7 +2179,7 @@ struct Index {
           data[rIndex] = this.strokeR
           data[gIndex] = this.strokeG
           data[bIndex] = this.strokeB
-          data[aIndex] = 255
+          data[aIndex] = alpha
         }
       }
     }
@@ -2271,7 +2313,7 @@ struct Index {
     }
 
     const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
-
+    const alpha: number = this.getStrokeAlpha()
     const drawThickPoint = (cx: number, cy: number): void => {
       for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
         if (yy < 0 || yy >= height) {
@@ -2302,7 +2344,7 @@ struct Index {
           buffer[rIndex] = this.strokeR
           buffer[gIndex] = this.strokeG
           buffer[bIndex] = this.strokeB
-          buffer[aIndex] = 255
+          buffer[aIndex] = alpha
         }
       }
     }
@@ -2382,5 +2424,24 @@ struct Index {
     // 3) 清空缓存
     this.freeDrawBuffer = null
     this.freeDrawArrayBuffer = null
+  }
+
+  // 根据当前画笔透明度 strokeOpacity（0.0~1.0）计算对应的 alpha（0~255）
+  // 当前画笔的 alpha（0~255）
+  private getStrokeAlpha(): number {
+    // 以后如果要做橡皮擦 = 抹透明，可以在这里 special case
+    if (this.currentBrush === BrushTool.Eraser) {
+      // 暂时先留着 255，不做“抹透明”逻辑，后面我们单独处理橡皮擦
+      // return 0
+    }
+
+    let a: number = Math.round(this.strokeOpacity * 255)
+
+    if (a < 0) {
+      a = 0
+    } else if (a > 255) {
+      a = 255
+    }
+    return a
   }
 }
