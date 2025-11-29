@@ -14,8 +14,18 @@ interface ErrorWithCode {
 }
 
 // 每一步画布状态快照，用于撤销
+// interface CanvasSnapshot {
+//   pixelMap?: image.PixelMap
+//   zoom: number
+//   offsetX: number
+//   offsetY: number
+//   brightnessLevel: number
+//   contrastLevel: number
+//   accumulatedRotate: number
+// }
 interface CanvasSnapshot {
-  pixelMap?: image.PixelMap
+  pixelMap?: image.PixelMap // 底图快照
+  drawPixelMap?: image.PixelMap // ⭐ 新增：绘制图层快照
   zoom: number
   offsetX: number
   offsetY: number
@@ -59,6 +69,11 @@ struct Index {
   @State offsetX: number = 0
   @State offsetY: number = 0
   @State pixelVersion: number = 0
+  // ================= 新增：绘制图层 =================
+  // 专门用来画线条/形状，橡皮擦只擦这个层
+  @State drawPixelMap?: image.PixelMap = undefined
+  @State drawPixelVersion: number = 0
+  // ==================================================
   // 旋转中标志，防止连点导致两次右旋
   private isRotating: boolean = false
   private accumulatedRotate: number = 0 // 之前旋转的总度数
@@ -455,10 +470,9 @@ struct Index {
               .justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
             } else {
-
-              // ==========================
-              // 1. 图片显示层
-              // ==========================
+              // =======================
+              // 1. 图片显示层（底图）
+              // =======================
               Image(this.pixelMap)
                 .id(`img-${this.pixelVersion}`)
                 .objectFit(ImageFit.Contain)
@@ -467,6 +481,19 @@ struct Index {
                 .scale({ x: this.zoom, y: this.zoom })
                 .translate({ x: this.offsetX, y: this.offsetY })
                 .colorFilter(this.buildToneMatrix())
+
+              // =======================
+              // 1.5 绘制图层（叠加）
+              // =======================
+              if (this.drawPixelMap) {
+                Image(this.drawPixelMap)
+                  .id(`draw-${this.drawPixelVersion}`)
+                  .objectFit(ImageFit.Contain)
+                  .width('100%')
+                  .height('100%')
+                  .scale({ x: this.zoom, y: this.zoom })
+                  .translate({ x: this.offsetX, y: this.offsetY })
+              }
 
 
               // ==========================
@@ -731,6 +758,43 @@ struct Index {
     }
   }
 
+  // 根据底图 pm 创建一张“完全透明”的绘制图层（尺寸 & 像素格式一致）
+  private async createEmptyDrawLayerLike(pm: image.PixelMap): Promise<image.PixelMap> {
+    // 1. 先 clone 一份，保证 editable
+    const layer: image.PixelMap = await this.clonePixelMap(pm)
+
+    // 2. 把所有像素清成透明
+    const byteLength: number = layer.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await layer.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 0 // R
+      data[i + 1] = 0 // G
+      data[i + 2] = 0 // B
+      data[i + 3] = 0 // A = 0 完全透明
+    }
+
+    await layer.writeBufferToPixels(buffer)
+    return layer
+  }
+
+  // 确保存在绘制图层：没有就创建，有就直接返回
+  private async ensureDrawLayer(): Promise<image.PixelMap | undefined> {
+    if (!this.pixelMap) {
+      return undefined
+    }
+
+    if (!this.drawPixelMap) {
+      const basePm = this.pixelMap as image.PixelMap
+      this.drawPixelMap = await this.createEmptyDrawLayerLike(basePm)
+      this.drawPixelVersion++
+    }
+
+    return this.drawPixelMap as image.PixelMap
+  }
+
   // 鸿蒙 6.0 官方可用、不变色的克隆：pack → decode
   private async clonePixelMap(pm: image.PixelMap): Promise<image.PixelMap> {
     // 1. pack 成 PNG 内存流（注意：packToData 只有两个参数）
@@ -758,23 +822,30 @@ struct Index {
   // includePixel = true：把 pmForSnapshot 这张图作为快照保存（不拷贝像素）——专门给裁剪用
   private async pushHistorySnapshot(includePixel: boolean, pmForSnapshot?: image.PixelMap): Promise<void> {
     let snapshotPixel: image.PixelMap | undefined = undefined
+    let snapshotDraw: image.PixelMap | undefined = undefined // ⭐ 新增
 
-    // 是否包含像素快照
+    // 是否包含像素快照（底图）
     if (includePixel && pmForSnapshot) {
       snapshotPixel = pmForSnapshot
+    }
+
+    // ⭐ 不管底图要不要保存，绘制图层如果存在，都 clone 一份保存快照
+    if (this.drawPixelMap) {
+      snapshotDraw = await this.clonePixelMap(this.drawPixelMap as image.PixelMap)
     }
 
     // 如果已经撤销到中间，再做新操作，则砍掉“未来”分支
     if (this.historyIndex >= 0 && this.historyIndex < this.history.length - 1) {
       for (let i = this.historyIndex + 1; i < this.history.length; i++) {
         this.history[i].pixelMap?.release?.()
+        this.history[i].drawPixelMap?.release?.() // ⭐ 记得释放绘制层快照
       }
       this.history = this.history.slice(0, this.historyIndex + 1)
     }
 
-    // 直接 push，不做任何上限限制
     this.history.push({
       pixelMap: snapshotPixel,
+      drawPixelMap: snapshotDraw, // ⭐ 存进去
       zoom: this.zoom,
       offsetX: this.offsetX,
       offsetY: this.offsetY,
@@ -783,53 +854,62 @@ struct Index {
       accumulatedRotate: this.accumulatedRotate
     })
 
-    // 永远指向最新
     this.historyIndex = this.history.length - 1
   }
 
   // 重置到“刚打开图片时”的状态
-  private async resetView() {
-    // 没有图，直接返回
+  private async resetView(): Promise<void> {
+    // ① 没有图，直接返回
     if (!this.pixelMap) {
-      return
+      return;
     }
 
-    // 没有原图快照：说明是老数据或异常情况，只重置视图参数
+    // ② 没有原图快照：只重置视图参数（兼容老数据）
     if (!this.originalPixelMap) {
-      this.zoom = 1.0
-      this.offsetX = 0
-      this.offsetY = 0
-      this.brightnessLevel = 0.0
-      this.contrastLevel = 0.0
-      this.accumulatedRotate = 0
-      this.pixelVersion++
-      return
+      this.zoom = 1.0;
+      this.offsetX = 0;
+      this.offsetY = 0;
+      this.brightnessLevel = 0.0;
+      this.contrastLevel = 0.0;
+      this.accumulatedRotate = 0;
+      this.pixelVersion++;
+      return;
     }
 
-    // ① 把当前状态放进历史栈，reset 也可以被“撤销”
-    const beforeResetPm = await this.clonePixelMap(this.pixelMap as image.PixelMap)
-    await this.pushHistorySnapshot(true, beforeResetPm)
+    // ③ 在重置之前，先把当前状态放进历史栈，reset 也能“撤销”
+    const currentPm: image.PixelMap = this.pixelMap as image.PixelMap;
+    const beforeResetPm: image.PixelMap = await this.clonePixelMap(currentPm);
+    await this.pushHistorySnapshot(true, beforeResetPm);
 
-    // ② 用 originalPixelMap 还原像素（重新 clone 一份可编辑版本）
-    const newPm = await this.clonePixelMap(this.originalPixelMap as image.PixelMap)
+    // ④ 用 originalPixelMap 还原底图（重新 clone 一份可编辑版本）
+    const originalPm: image.PixelMap = this.originalPixelMap as image.PixelMap;
+    const newPm: image.PixelMap = await this.clonePixelMap(originalPm);
 
-    // 释放当前正在使用的 PixelMap
-    ;
-    (this.pixelMap as image.PixelMap).release?.()
+    // 释放当前底图
+    currentPm.release();
 
-    // 换成“刚打开时”的图
-    this.pixelMap = newPm
+    // 替换为“刚打开图片时”的底图
+    this.pixelMap = newPm;
 
-    // ③ 还原视图参数
-    this.zoom = 1.0
-    this.offsetX = 0
-    this.offsetY = 0
-    this.brightnessLevel = 0.0
-    this.contrastLevel = 0.0
-    this.accumulatedRotate = 0
+    // ⑤ 重建绘制图层：相当于新建一张全透明的 overlay
+    if (this.drawPixelMap) {
+      const currentDrawPm: image.PixelMap = this.drawPixelMap as image.PixelMap;
+      currentDrawPm.release();
+    }
+    const drawLayer: image.PixelMap = await this.createEmptyDrawLayerLike(newPm);
+    this.drawPixelMap = drawLayer;
+    this.drawPixelVersion++; // 触发叠加层 Image 刷新
 
-    // ④ 通知 UI 刷新
-    this.pixelVersion++
+    // ⑥ 还原视图参数
+    this.zoom = 1.0;
+    this.offsetX = 0;
+    this.offsetY = 0;
+    this.brightnessLevel = 0.0;
+    this.contrastLevel = 0.0;
+    this.accumulatedRotate = 0;
+
+    // ⑦ 通知底图刷新
+    this.pixelVersion++;
   }
 
   // 打开图片（
@@ -899,6 +979,14 @@ struct Index {
       this.contrastLevel = 0.0
       this.accumulatedRotate = 0
       this.pixelVersion++
+
+      // ========== 新增：为这张图片创建一层透明的绘制层 ==========
+      if (this.drawPixelMap) {
+        this.drawPixelMap.release?.()
+      }
+      this.drawPixelMap = await this.createEmptyDrawLayerLike(pm)
+      this.drawPixelVersion++
+      // =========================================================
 
       promptAction.showToast({ message: '图片已加载 ' })
     } catch (err) {
@@ -1071,8 +1159,7 @@ struct Index {
     promptAction.showToast({ message: '裁剪完成' })
   }
 
-  // 向右旋转 90 度（顺时针）
-  private async rotateRight90() {
+  private async rotateRight90(): Promise<void> {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
       return
@@ -1081,20 +1168,26 @@ struct Index {
       return
     }
 
-    // 先记录历史快照（不包含像素）
     await this.pushHistorySnapshot(false)
 
     this.isRotating = true
     try {
+      // ① 旋转底图
       await (this.pixelMap as image.PixelMap).rotate(90)
 
-      // 这里记录累计旋转
+      // ② 若有绘制层，也一起旋转（关键）
+      if (this.drawPixelMap) {
+        await (this.drawPixelMap as image.PixelMap).rotate(90)
+        this.drawPixelVersion++
+      }
+
+      // ③ 更新累计角度
       this.accumulatedRotate = (this.accumulatedRotate + 90) % 360
 
       this.pixelVersion++
     } catch (err) {
-      const e = err as ErrorWithCode
-      console.error(`rotateRight90 failed, code=${e?.code}, msg=${e?.message}`)
+      const e = err as Error
+      console.error(`rotateRight90 failed: ${e.message}`)
       promptAction.showToast({ message: '右旋失败' })
     } finally {
       this.isRotating = false
@@ -1102,7 +1195,7 @@ struct Index {
   }
 
   // 向左旋转 90 度（逆时针）
-  private async rotateLeft90() {
+  private async rotateLeft90(): Promise<void> {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
       return
@@ -1111,21 +1204,26 @@ struct Index {
       return
     }
 
-    // 先记录历史快照（不包含像素）
     await this.pushHistorySnapshot(false)
 
     this.isRotating = true
     try {
-      // 实际对 PixelMap 做顺时针 270°（等价于逆时针 90°）
+      // ① 底图旋转
       await (this.pixelMap as image.PixelMap).rotate(270)
 
-      // 累计角度也加上 270°
+      // ② 绘制图层同步旋转
+      if (this.drawPixelMap) {
+        await (this.drawPixelMap as image.PixelMap).rotate(270)
+        this.drawPixelVersion++
+      }
+
+      // ③ 更新累计角度
       this.accumulatedRotate = (this.accumulatedRotate + 270) % 360
 
       this.pixelVersion++
     } catch (err) {
-      const e = err as ErrorWithCode
-      console.error(`rotateLeft90 failed, code=${e?.code}, msg=${e?.message}`)
+      const e = err as Error
+      console.error(`rotateLeft90 failed: ${e.message}`)
       promptAction.showToast({ message: '左旋失败' })
     } finally {
       this.isRotating = false
@@ -1348,6 +1446,24 @@ struct Index {
       }
     }
 
+    // ⭐ 新增：恢复绘制图层（drawPixelMap）
+    if (snapshot.drawPixelMap) {
+      const newDraw = await this.clonePixelMap(snapshot.drawPixelMap)
+
+      if (this.drawPixelMap && this.drawPixelMap !== snapshot.drawPixelMap) {
+        this.drawPixelMap.release?.()
+      }
+      this.drawPixelMap = newDraw
+      this.drawPixelVersion++ // 让 Image(drawPixelMap) 也刷新
+    } else {
+      // 这一步表示当时没有绘制层快照 → 撤销到一个“没有绘制层”的状态
+      if (this.drawPixelMap) {
+        this.drawPixelMap.release?.()
+        this.drawPixelMap = undefined
+        this.drawPixelVersion++
+      }
+    }
+
     // === 恢复其他状态（缩放/平移/亮度/对比度等） ===
     this.zoom = snapshot.zoom
     this.offsetX = snapshot.offsetX
@@ -1359,216 +1475,79 @@ struct Index {
     this.pixelVersion++
   }
 
-  // 在当前 pixelMap 上画一个点（uiX/uiY 是画布上的点击坐标）
+  // 在「绘制图层」上画一个点（uiX/uiY 是画布上的点击坐标）
   private async drawPointAtUi(uiX: number, uiY: number) {
     if (!this.pixelMap) {
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
+    await this.pushHistorySnapshot(false)
 
-    // 1）算出当前图片在画布上的实际显示尺寸（contain + zoom）
+    // 1. 画布尺寸防御
+    if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
+      console.info('>>> drawPointAtUi: canvas size is 0, skip')
+      return
+    }
+
+    // 2. 必须已经有绘制图层（在 pickImage 里创建）
+    if (!this.drawPixelMap) {
+      promptAction.showToast({ message: '绘制图层不存在，请重新打开图片' })
+      return
+    }
+
+    const basePm = this.pixelMap as image.PixelMap
+    const baseInfo: image.ImageInfo = await basePm.getImageInfo()
+
+    const imgW: number = baseInfo.size.width
+    const imgH: number = baseInfo.size.height
+
+    // ===== 1) UI -> 像素 坐标映射 =====
     const scaleBase: number = Math.min(
-      this.canvasWidth / info.size.width,
-      this.canvasHeight / info.size.height
+      this.canvasWidth / imgW,
+      this.canvasHeight / imgH
     )
 
-    const realW: number = info.size.width * scaleBase * this.zoom
-    const realH: number = info.size.height * scaleBase * this.zoom
+    if (scaleBase <= 0) {
+      console.info('>>> drawPointAtUi: scaleBase <= 0, skip')
+      return
+    }
 
-    // 图片左上角在画布中的位置（考虑平移 offsetX/Y）
+    const realW: number = imgW * scaleBase * this.zoom
+    const realH: number = imgH * scaleBase * this.zoom
+
     const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
     const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
 
-    // 2）把 UI 坐标映射到像素坐标
-    const pxFloat: number = (uiX - imageLeft) * (info.size.width / realW)
-    const pyFloat: number = (uiY - imageTop) * (info.size.height / realH)
+    const pxFloat: number = (uiX - imageLeft) * (imgW / realW)
+    const pyFloat: number = (uiY - imageTop) * (imgH / realH)
 
     const px: number = Math.floor(pxFloat)
     const py: number = Math.floor(pyFloat)
 
-    console.info(
-      `>>> drawPointAtUi ui=(${uiX.toFixed(1)},${uiY.toFixed(1)}) ` +
-        `-> pixel=(${px},${py}), imgSize=(${info.size.width},${info.size.height})`
-    )
+    console.info(`>>> drawPointAtUi: ui=(${uiX.toFixed(1)}, ${uiY.toFixed(1)}) -> pixel=(${px}, ${py})`)
 
-    // 点在图片外面就不用画
-    if (px < 0 || py < 0 || px >= info.size.width || py >= info.size.height) {
-      console.info('>>> drawPointAtUi: pixel out of range, skip')
+    if (px < 0 || py < 0 || px >= imgW || py >= imgH) {
+      // 点击在图片外面，直接丢弃
       return
     }
 
-    // 3）先把当前图克隆一份进历史栈，方便撤销
-    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
-    await this.pushHistorySnapshot(true, backupPm)
-
-    // 4）读出像素数据
-    const byteLength: number = pm.getPixelBytesNumber()
-    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
-    await pm.readPixelsToBuffer(buffer)
-    const data: Uint8Array = new Uint8Array(buffer)
-
-    // 打一行 log 看看每像素字节数
-    const width: number = info.size.width
-    const height: number = info.size.height
-    const bpp: number = byteLength / (width * height)
-    console.info(`>>> pixelFormat=${info.pixelFormat}, bytesPerPixel=${bpp}`)
-
-    // 像素格式判断，确定 RGBA 顺序
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (info.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        // B G R A
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        // A R G B
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-      // R G B A
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
-
-    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
-
-    for (let yy: number = py - radius; yy <= py + radius; yy++) {
-      if (yy < 0 || yy >= height) {
-        continue
-      }
-      for (let xx: number = px - radius; xx <= px + radius; xx++) {
-        if (xx < 0 || xx >= width) {
-          continue
-        }
-
-        const dx: number = xx - px
-        const dy: number = yy - py
-        if (dx * dx + dy * dy > radius * radius) {
-          continue
-        }
-
-        const baseIndex: number = (yy * width + xx) * 4
-        const rIndex: number = baseIndex + rOffset
-        const gIndex: number = baseIndex + gOffset
-        const bIndex: number = baseIndex + bOffset
-        const aIndex: number = baseIndex + aOffset
-
-        const alpha: number = this.getStrokeAlpha()
-
-        data[rIndex] = this.strokeR
-        data[gIndex] = this.strokeG
-        data[bIndex] = this.strokeB
-        data[aIndex] = alpha
-      }
-    }
-
-    // 5）把修改后的像素写回原 pixelMap
-    await pm.writeBufferToPixels(buffer)
-
-    // 6）为了完全确保 UI 刷新：再 clone 一份新的 PixelMap 赋给 this.pixelMap
-    const newPm: image.PixelMap = await this.clonePixelMap(pm)
-
-    // 释放旧的 this.pixelMap，避免泄露
-    if (this.pixelMap && this.pixelMap !== newPm) {
-      (this.pixelMap as image.PixelMap).release?.()
-    }
-    this.pixelMap = newPm
-
-    // 通知 Image 重新渲染
-    this.pixelVersion++
-  }
-
-  // 直线工具：拖拽产生的起点/终点（UI 坐标），在这里转换成像素并画线
-  private async handleLineDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number) {
-    if (!this.pixelMap) {
-      return
-    }
-
-    const pm = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
-
-    // —— UI → 像素（复用你画点的映射逻辑） ——
-    const scaleBase: number = Math.min(
-      this.canvasWidth / info.size.width,
-      this.canvasHeight / info.size.height
-    )
-
-    const realW: number = info.size.width * scaleBase * this.zoom
-    const realH: number = info.size.height * scaleBase * this.zoom
-
-    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
-    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
-
-    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
-    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
-    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
-    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
-
-    const x0: number = Math.floor(startPxFloat)
-    const y0: number = Math.floor(startPyFloat)
-    const x1: number = Math.floor(endPxFloat)
-    const y1: number = Math.floor(endPyFloat)
-
-    console.info(
-      `>>> handleLineDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
-        `uiEnd=(${endUiX.toFixed(1)},${endUiY.toFixed(1)}) -> ` +
-        `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
-    )
-
-    // 简单边界判断
-    if (x0 < 0 || y0 < 0 || x0 >= info.size.width || y0 >= info.size.height ||
-      x1 < 0 || y1 < 0 || x1 >= info.size.width || y1 >= info.size.height) {
-      console.info('>>> handleLineDrag: line endpoints out of image range, skip')
-      return
-    }
-
-    // 1）在修改前压入撤销栈
-    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
-    await this.pushHistorySnapshot(true, backupPm)
-
-    // 2）真正按像素画线（带粗细 + 颜色）
-    await this.drawLineBetweenPixels(x0, y0, x1, y1)
-
-    promptAction.showToast({ message: '直线已绘制' })
-  }
-
-  private async drawLineBetweenPixels(x0: number, y0: number, x1: number, y1: number) {
-    if (!this.pixelMap) {
-      return
-    }
-
-    const pm = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
-
+    // ===== 2) 在「绘制图层」上改像素 =====
+    const layerPm: image.PixelMap = this.drawPixelMap as image.PixelMap
+    const info: image.ImageInfo = await layerPm.getImageInfo()
     const width: number = info.size.width
     const height: number = info.size.height
 
-    if (x0 < 0 || y0 < 0 || x0 >= width || y0 >= height ||
-      x1 < 0 || y1 < 0 || x1 >= width || y1 >= height) {
+    if (px < 0 || py < 0 || px >= width || py >= height) {
+      console.info('>>> drawPointAtUi: pixel out of layer range')
       return
     }
 
-    const byteLength: number = pm.getPixelBytesNumber()
+    const byteLength: number = layerPm.getPixelBytesNumber()
     const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
-    await pm.readPixelsToBuffer(buffer)
+    await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
+    // 通道顺序
     let rOffset: number = 0
     let gOffset: number = 1
     let bOffset: number = 2
@@ -1599,17 +1578,196 @@ struct Index {
     const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
     const alpha: number = this.getStrokeAlpha()
 
-    const drawThickPoint = (cx: number, cy: number) => {
-      for (let yy = cy - radius; yy <= cy + radius; yy++) {
+    for (let yy: number = py - radius; yy <= py + radius; yy++) {
+      if (yy < 0 || yy >= height) {
+        continue
+      }
+      for (let xx: number = px - radius; xx <= px + radius; xx++) {
+        if (xx < 0 || xx >= width) {
+          continue
+        }
+
+        const dx: number = xx - px
+        const dy: number = yy - py
+        if (dx * dx + dy * dy > radius * radius) {
+          continue
+        }
+
+        const baseIndex: number = (yy * width + xx) * 4
+        const rIndex: number = baseIndex + rOffset
+        const gIndex: number = baseIndex + gOffset
+        const bIndex: number = baseIndex + bOffset
+        const aIndex: number = baseIndex + aOffset
+
+        if (this.currentBrush === BrushTool.Eraser) {
+          // 橡皮擦：只擦掉绘制层的 alpha
+          data[aIndex] = 0
+        } else {
+          data[rIndex] = this.strokeR
+          data[gIndex] = this.strokeG
+          data[bIndex] = this.strokeB
+          data[aIndex] = alpha
+        }
+      }
+    }
+
+    // ===== 3) 写回 + 换一个新的 PixelMap 引用，强制 UI 刷新 =====
+    await layerPm.writeBufferToPixels(buffer)
+
+    // 和你对主图的做法保持一致：clone 一份新的，赋给 @State
+    const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
+    // 旧的图层可以释放（可选）
+    if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
+      this.drawPixelMap.release?.()
+    }
+    this.drawPixelMap = newLayer
+
+    console.info(`>>> draw layer created: size=${(await this.drawPixelMap!.getImageInfo()).size.width}x${(await this.drawPixelMap!.getImageInfo()).size.height}`)
+
+
+    this.drawPixelVersion++ // id(`draw-${drawPixelVersion}`) 也一起变
+  }
+
+  // 直线工具：拖拽产生的起点/终点（UI 坐标），在这里转换成像素并画线
+  // 直线工具：拖拽产生的起点/终点（UI 坐标），在这里转换成像素并在绘制图层上画线
+  private async handleLineDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
+    if (!this.pixelMap) {
+      return
+    }
+
+    const pm: image.PixelMap = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    // —— UI → 像素（和画点完全一致的映射逻辑）——
+    const scaleBase: number = Math.min(
+      this.canvasWidth / info.size.width,
+      this.canvasHeight / info.size.height
+    )
+
+    const realW: number = info.size.width * scaleBase * this.zoom
+    const realH: number = info.size.height * scaleBase * this.zoom
+
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
+    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
+    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
+    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
+
+    const x0: number = Math.floor(startPxFloat)
+    const y0: number = Math.floor(startPyFloat)
+    const x1: number = Math.floor(endPxFloat)
+    const y1: number = Math.floor(endPyFloat)
+
+    console.info(
+      `>>> handleLineDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
+        `uiEnd=(${endUiX.toFixed(1)},${endUiY.toFixed(1)}) -> ` +
+        `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
+    )
+
+    // 尝试确保有绘制图层（这里不直接用返回值，只做存在性检查）
+    const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
+    if (!layerPm) {
+      return
+    }
+
+    // 交给专门函数在“绘制图层”上画线
+    await this.drawLineBetweenPixels(x0, y0, x1, y1)
+
+    promptAction.showToast({ message: '直线已绘制' })
+  }
+
+  // 在绘制图层 drawPixelMap 上画一条“带粗细的直线”
+  private async drawLineBetweenPixels(x0: number, y0: number, x1: number, y1: number): Promise<void> {
+    if (!this.pixelMap) {
+      return
+    }
+
+    // ⭐ 和画点一样，先记录一次历史快照（只记录状态 + 绘制层）
+    await this.pushHistorySnapshot(false)
+
+    // 1. 用底图做一次尺寸边界检查（正常和绘制层一致）
+    const basePm: image.PixelMap = this.pixelMap as image.PixelMap
+    const baseInfo: image.ImageInfo = await basePm.getImageInfo()
+    const baseW: number = baseInfo.size.width
+    const baseH: number = baseInfo.size.height
+
+    if (
+      x0 < 0 || y0 < 0 || x0 >= baseW || y0 >= baseH ||
+        x1 < 0 || y1 < 0 || x1 >= baseW || y1 >= baseH
+    ) {
+      console.info('>>> drawLineBetweenPixels: endpoints out of base range, skip')
+      return
+    }
+
+    // 2. 只在绘制图层上画线
+    const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
+    if (!layerPm) {
+      return
+    }
+
+    const info: image.ImageInfo = await layerPm.getImageInfo()
+    const width: number = info.size.width
+    const height: number = info.size.height
+
+    if (
+      x0 < 0 || y0 < 0 || x0 >= width || y0 >= height ||
+        x1 < 0 || y1 < 0 || x1 >= width || y1 >= height
+    ) {
+      console.info('>>> drawLineBetweenPixels: endpoints out of layer range, skip')
+      return
+    }
+
+    // 3. 读取绘制层像素
+    const byteLength: number = layerPm.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await layerPm.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    // 4. 通道顺序
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (info.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    const alpha: number = this.getStrokeAlpha()
+
+    const drawThickPoint = (cx: number, cy: number): void => {
+      for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
         if (yy < 0 || yy >= height) {
           continue
         }
-        for (let xx = cx - radius; xx <= cx + radius; xx++) {
+        for (let xx: number = cx - radius; xx <= cx + radius; xx++) {
           if (xx < 0 || xx >= width) {
             continue
           }
-          const dx = xx - cx
-          const dy = yy - cy
+
+          const dx: number = xx - cx
+          const dy: number = yy - cy
           if (dx * dx + dy * dy > radius * radius) {
             continue
           }
@@ -1620,16 +1778,20 @@ struct Index {
           const bIndex: number = baseIndex + bOffset
           const aIndex: number = baseIndex + aOffset
 
-          data[rIndex] = this.strokeR
-          data[gIndex] = this.strokeG
-          data[bIndex] = this.strokeB
-          data[aIndex] = alpha
-
+          if (this.currentBrush === BrushTool.Eraser) {
+            // 橡皮擦：只擦绘制层，变成透明
+            data[aIndex] = 0
+          } else {
+            data[rIndex] = this.strokeR
+            data[gIndex] = this.strokeG
+            data[bIndex] = this.strokeB
+            data[aIndex] = alpha
+          }
         }
       }
     }
 
-    // Bresenham 画线
+    // 5. Bresenham 画线
     let curX: number = x0
     let curY: number = y0
     const dx: number = Math.abs(x1 - x0)
@@ -1638,6 +1800,7 @@ struct Index {
     const sy: number = y0 < y1 ? 1 : -1
     let err: number = dx + dy
 
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       drawThickPoint(curX, curY)
 
@@ -1656,16 +1819,20 @@ struct Index {
       }
     }
 
-    await pm.writeBufferToPixels(buffer)
+    // 6. 写回绘制层像素
+    await layerPm.writeBufferToPixels(buffer)
 
-    // 为保证 UI 刷新：clone 一张新 PixelMap 替换当前的
-    const newPm: image.PixelMap = await this.clonePixelMap(pm)
-    if (this.pixelMap && this.pixelMap !== newPm) {
-      (this.pixelMap as image.PixelMap).release?.()
+    // ⭐ 关键：和画点一样，clone 一张新的图层，换引用，强制 UI 刷新
+    const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
+
+    if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
+      this.drawPixelMap.release?.()
     }
-    this.pixelMap = newPm
+    this.drawPixelMap = newLayer
 
-    this.pixelVersion++
+    this.drawPixelVersion++ // id("draw-xxx") 变化，叠加层 Image 会重建
+
+    console.info(`>>> drawLineBetweenPixels: line drawn, drawPixelVersion=${this.drawPixelVersion}`)
   }
 
   // 矩形工具：拖拽产生的起点/终点（UI 坐标），在这里转成像素并画矩形
@@ -1708,26 +1875,27 @@ struct Index {
     // 这里不强制要求完全在图内，真正的边界裁剪交给 drawRectBetweenPixels 去做
 
     // 1）修改前先把当前整图压入撤销栈（可撤回）
-    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
-    await this.pushHistorySnapshot(true, backupPm)
+    // 1）修改前：只记录状态 + 绘制层快照（底图不动）
+    await this.pushHistorySnapshot(false)
 
-    // 2）真正按像素画矩形边框（使用当前 stroke 宽度 + 颜色）
+    // 2）在绘制层上画矩形
     await this.drawRectBetweenPixels(x0, y0, x1, y1)
 
     promptAction.showToast({ message: '矩形已绘制' })
   }
 
   // 在像素坐标里画一个矩形边框（使用当前 stroke 宽度和颜色）
-  private async drawRectBetweenPixels(x0: number, y0: number, x1: number, y1: number) {
+  // 在绘制图层 drawPixelMap 上画一个矩形边框（使用当前 stroke 宽度和颜色）
+  private async drawRectBetweenPixels(x0: number, y0: number, x1: number, y1: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
-
-    const width: number = info.size.width
-    const height: number = info.size.height
+    // 1）先用底图做一次尺寸边界检查
+    const basePm: image.PixelMap = this.pixelMap as image.PixelMap
+    const baseInfo: image.ImageInfo = await basePm.getImageInfo()
+    const baseW: number = baseInfo.size.width
+    const baseH: number = baseInfo.size.height
 
     // 归一化成左上 / 右下
     let left: number = Math.min(x0, x1)
@@ -1735,24 +1903,34 @@ struct Index {
     let top: number = Math.min(y0, y1)
     let bottom: number = Math.max(y0, y1)
 
-    // 裁剪在图片范围之内
+    // 裁剪在图片范围之内（用底图尺寸）
     left = Math.max(0, left)
-    right = Math.min(width - 1, right)
+    right = Math.min(baseW - 1, right)
     top = Math.max(0, top)
-    bottom = Math.min(height - 1, bottom)
+    bottom = Math.min(baseH - 1, bottom)
 
     if (left >= right || top >= bottom) {
       console.info('>>> drawRectBetweenPixels: rect too small, skip')
       return
     }
 
-    // 1）读像素
-    const byteLength: number = pm.getPixelBytesNumber()
+    // 2）只在绘制图层上画矩形
+    const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
+    if (!layerPm) {
+      return
+    }
+
+    const info: image.ImageInfo = await layerPm.getImageInfo()
+    const width: number = info.size.width
+    const height: number = info.size.height
+
+    // 3）读绘制层的像素
+    const byteLength: number = layerPm.getPixelBytesNumber()
     const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
-    await pm.readPixelsToBuffer(buffer)
+    await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
-    // 2）确定通道顺序
+    // 4）确定通道顺序
     let rOffset: number = 0
     let gOffset: number = 1
     let bOffset: number = 2
@@ -1782,17 +1960,19 @@ struct Index {
 
     const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
     const alpha: number = this.getStrokeAlpha()
-    const drawThickPoint = (cx: number, cy: number) => {
-      for (let yy = cy - radius; yy <= cy + radius; yy++) {
+
+    const drawThickPoint = (cx: number, cy: number): void => {
+      for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
         if (yy < 0 || yy >= height) {
           continue
         }
-        for (let xx = cx - radius; xx <= cx + radius; xx++) {
+        for (let xx: number = cx - radius; xx <= cx + radius; xx++) {
           if (xx < 0 || xx >= width) {
             continue
           }
-          const dx = xx - cx
-          const dy = yy - cy
+
+          const dx: number = xx - cx
+          const dy: number = yy - cy
           if (dx * dx + dy * dy > radius * radius) {
             continue
           }
@@ -1803,56 +1983,61 @@ struct Index {
           const bIndex: number = baseIndex + bOffset
           const aIndex: number = baseIndex + aOffset
 
-          data[rIndex] = this.strokeR
-          data[gIndex] = this.strokeG
-          data[bIndex] = this.strokeB
-          data[aIndex] = alpha
-
+          if (this.currentBrush === BrushTool.Eraser) {
+            // 橡皮擦：只擦绘制层的 alpha
+            data[aIndex] = 0
+          } else {
+            data[rIndex] = this.strokeR
+            data[gIndex] = this.strokeG
+            data[bIndex] = this.strokeB
+            data[aIndex] = alpha
+          }
         }
       }
     }
 
-    // 3）画四条边：上、下、左、右
-    for (let x = left; x <= right; x++) {
+    // 5）画四条边：上、下、左、右
+    for (let x: number = left; x <= right; x++) {
       drawThickPoint(x, top) // 上边
       drawThickPoint(x, bottom) // 下边
     }
-    for (let y = top; y <= bottom; y++) {
+    for (let y: number = top; y <= bottom; y++) {
       drawThickPoint(left, y) // 左边
       drawThickPoint(right, y) // 右边
     }
 
-    // 4）写回像素
-    await pm.writeBufferToPixels(buffer)
+    // 6）写回绘制层像素
+    await layerPm.writeBufferToPixels(buffer)
 
-    // 5）为了保证 UI 刷新：clone 一份新的 PixelMap 替换当前的
-    const newPm: image.PixelMap = await this.clonePixelMap(pm)
-    if (this.pixelMap && this.pixelMap !== newPm) {
-      (this.pixelMap as image.PixelMap).release?.()
+    // 7）clone 一份新的绘制层，换引用，强制 UI 刷新
+    const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
+    if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
+      this.drawPixelMap.release?.()
     }
-    this.pixelMap = newPm
+    this.drawPixelMap = newLayer
+    this.drawPixelVersion++ // 触发 Image(drawPixelMap) 重建
 
-    this.pixelVersion++
+    console.info(`>>> drawRectBetweenPixels: rect drawn, drawPixelVersion=${this.drawPixelVersion}`)
   }
 
   // 在像素坐标里画一个圆形边框（使用当前 stroke 宽度和颜色）
   // 这里传入的是圆的外接正方形的左上 / 右下
-  private async drawCircleBetweenPixels(left: number, top: number, right: number, bottom: number) {
+  // 这里传入的是圆的外接正方形的左上 / 右下，在“绘制图层”上画圆
+  private async drawCircleBetweenPixels(left: number, top: number, right: number, bottom: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
+    // 用底图做一次边界裁剪（尺寸与绘制层一致）
+    const basePm: image.PixelMap = this.pixelMap as image.PixelMap
+    const baseInfo: image.ImageInfo = await basePm.getImageInfo()
+    const baseW: number = baseInfo.size.width
+    const baseH: number = baseInfo.size.height
 
-    const width: number = info.size.width
-    const height: number = info.size.height
-
-    // 裁剪到图片范围
     left = Math.max(0, left)
-    right = Math.min(width - 1, right)
+    right = Math.min(baseW - 1, right)
     top = Math.max(0, top)
-    bottom = Math.min(height - 1, bottom)
+    bottom = Math.min(baseH - 1, bottom)
 
     const w: number = right - left
     const h: number = bottom - top
@@ -1863,7 +2048,7 @@ struct Index {
       return
     }
 
-    // 重新保证 right / bottom 是正方形
+    // 用正方形包住圆
     right = left + side
     bottom = top + side
 
@@ -1871,10 +2056,20 @@ struct Index {
     const cy: number = Math.round((top + bottom) / 2)
     const radius: number = side / 2
 
-    // 1）读像素
-    const byteLength: number = pm.getPixelBytesNumber()
+    // ② 在绘制图层上画圆
+    const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
+    if (!layerPm) {
+      return
+    }
+
+    const info: image.ImageInfo = await layerPm.getImageInfo()
+    const width: number = info.size.width
+    const height: number = info.size.height
+
+    // 1）读绘制层像素
+    const byteLength: number = layerPm.getPixelBytesNumber()
     const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
-    await pm.readPixelsToBuffer(buffer)
+    await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
     // 2）通道顺序
@@ -1905,20 +2100,21 @@ struct Index {
         break
     }
 
-    const thickRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    const strokeRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
     const alpha: number = this.getStrokeAlpha()
-    const drawThickPoint = (px: number, py: number) => {
-      for (let yy = py - thickRadius; yy <= py + thickRadius; yy++) {
+
+    const drawThickPoint = (px: number, py: number): void => {
+      for (let yy: number = py - strokeRadius; yy <= py + strokeRadius; yy++) {
         if (yy < 0 || yy >= height) {
           continue
         }
-        for (let xx = px - thickRadius; xx <= px + thickRadius; xx++) {
+        for (let xx: number = px - strokeRadius; xx <= px + strokeRadius; xx++) {
           if (xx < 0 || xx >= width) {
             continue
           }
-          const dx = xx - px
-          const dy = yy - py
-          if (dx * dx + dy * dy > thickRadius * thickRadius) {
+          const dx: number = xx - px
+          const dy: number = yy - py
+          if (dx * dx + dy * dy > strokeRadius * strokeRadius) {
             continue
           }
 
@@ -1928,10 +2124,15 @@ struct Index {
           const bIndex: number = baseIndex + bOffset
           const aIndex: number = baseIndex + aOffset
 
-          data[rIndex] = this.strokeR
-          data[gIndex] = this.strokeG
-          data[bIndex] = this.strokeB
-          data[aIndex] = alpha
+          if (this.currentBrush === BrushTool.Eraser) {
+            // 橡皮擦：只擦掉绘制层 alpha
+            data[aIndex] = 0
+          } else {
+            data[rIndex] = this.strokeR
+            data[gIndex] = this.strokeG
+            data[bIndex] = this.strokeB
+            data[aIndex] = alpha
+          }
         }
       }
     }
@@ -1941,7 +2142,7 @@ struct Index {
     // 步数与半径成比例，保证越大越平滑
     const steps: number = Math.max(36, Math.floor(TWO_PI * radius / 2))
 
-    for (let i = 0; i < steps; i++) {
+    for (let i: number = 0; i < steps; i++) {
       const t: number = (TWO_PI * i) / steps
       const px: number = Math.round(cx + radius * Math.cos(t))
       const py: number = Math.round(cy + radius * Math.sin(t))
@@ -1952,28 +2153,31 @@ struct Index {
       drawThickPoint(px, py)
     }
 
-    // 4）写回像素
-    await pm.writeBufferToPixels(buffer)
+    // 4）写回绘制层像素
+    await layerPm.writeBufferToPixels(buffer)
 
-    // 5）clone 一张新的 PixelMap 触发刷新
-    const newPm: image.PixelMap = await this.clonePixelMap(pm)
-    if (this.pixelMap && this.pixelMap !== newPm) {
-      (this.pixelMap as image.PixelMap).release?.()
+    // 5）clone 一份新的绘制层，触发 UI 刷新
+    const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
+    if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
+      this.drawPixelMap.release?.()
     }
-    this.pixelMap = newPm
-    this.pixelVersion++
+    this.drawPixelMap = newLayer
+    this.drawPixelVersion++ // 叠加层 Image 重新渲染
+
+    console.info(`>>> drawCircleBetweenPixels: circle drawn, drawPixelVersion=${this.drawPixelVersion}`)
   }
 
   // 圆形工具：拖拽产生的起点/终点（UI 坐标），转成像素并画圆
-  private async handleCircleDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number) {
+  // 圆形工具：拖拽产生的起点/终点（UI 坐标），转成像素并画圆（绘制在 overlay）
+  private async handleCircleDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
+    const pm: image.PixelMap = this.pixelMap as image.PixelMap
     const info: image.ImageInfo = await pm.getImageInfo()
 
-    // —— UI → 像素（完全沿用你画点 / 直线 / 矩形的映射逻辑）——
+    // —— UI → 像素（和点 / 直线 / 矩形保持一致）——
     const scaleBase: number = Math.min(
       this.canvasWidth / info.size.width,
       this.canvasHeight / info.size.height
@@ -2007,7 +2211,6 @@ struct Index {
     let top: number = Math.min(y0, y1)
     let bottom: number = Math.max(y0, y1)
 
-    // 正方形边长 = min(宽, 高) —— 这样保证是“圆”而不是椭圆
     const boxW: number = right - left
     const boxH: number = bottom - top
     const side: number = Math.min(Math.abs(boxW), Math.abs(boxH))
@@ -2021,23 +2224,23 @@ struct Index {
     right = left + side
     bottom = top + side
 
-    // 2）修改前压入撤销栈（整图快照）
-    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
-    await this.pushHistorySnapshot(true, backupPm)
+    // 2）修改前压入撤销栈：只记录状态 + 绘制层快照（底图不动）
+    await this.pushHistorySnapshot(false)
 
-    // 3）真正画圆（用这个正方形的中心和半径）
+    // 3）真正画圆（在绘制图层上）
     await this.drawCircleBetweenPixels(left, top, right, bottom)
 
     promptAction.showToast({ message: '圆形已绘制' })
   }
 
   // 椭圆工具：拖拽产生的起点/终点（UI 坐标），转成像素并画椭圆
-  private async handleEllipseDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number) {
+  // 椭圆工具：拖拽产生的起点/终点（UI 坐标），转成像素并在绘制图层上画椭圆
+  private async handleEllipseDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
+    const pm: image.PixelMap = this.pixelMap as image.PixelMap
     const info: image.ImageInfo = await pm.getImageInfo()
 
     const scaleBase: number = Math.min(
@@ -2077,11 +2280,10 @@ struct Index {
       return
     }
 
-    // 1）修改前压入撤销栈
-    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
-    await this.pushHistorySnapshot(true, backupPm)
+    // 1）修改前压入撤销栈：只记录状态 + 绘制层快照（底图不动）
+    await this.pushHistorySnapshot(false)
 
-    // 2）真正在像素里画椭圆
+    // 2）真正在绘制图层里画椭圆
     await this.drawEllipseBetweenPixels(left, top, right, bottom)
 
     promptAction.showToast({ message: '椭圆已绘制' })
@@ -2089,22 +2291,23 @@ struct Index {
 
   // 在像素坐标里画一个椭圆边框（使用当前 stroke 宽度和颜色）
   // 传入的是椭圆外接矩形左上 / 右下
-  private async drawEllipseBetweenPixels(left: number, top: number, right: number, bottom: number) {
+  // 在像素坐标里画一个椭圆边框（使用当前 stroke 宽度和颜色）
+  // 传入的是椭圆外接矩形左上 / 右下，实际绘制在 drawPixelMap 上
+  private async drawEllipseBetweenPixels(left: number, top: number, right: number, bottom: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
+    // 先用底图做一次边界裁剪（尺寸与绘制层一致）
+    const basePm: image.PixelMap = this.pixelMap as image.PixelMap
+    const baseInfo: image.ImageInfo = await basePm.getImageInfo()
+    const baseW: number = baseInfo.size.width
+    const baseH: number = baseInfo.size.height
 
-    const width: number = info.size.width
-    const height: number = info.size.height
-
-    // 裁剪到图片范围
     left = Math.max(0, left)
-    right = Math.min(width - 1, right)
+    right = Math.min(baseW - 1, right)
     top = Math.max(0, top)
-    bottom = Math.min(height - 1, bottom)
+    bottom = Math.min(baseH - 1, bottom)
 
     const w: number = right - left
     const h: number = bottom - top
@@ -2119,10 +2322,20 @@ struct Index {
     const rx: number = w / 2
     const ry: number = h / 2
 
-    // 1）读像素
-    const byteLength: number = pm.getPixelBytesNumber()
+    // ② 在绘制图层上画椭圆
+    const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
+    if (!layerPm) {
+      return
+    }
+
+    const info: image.ImageInfo = await layerPm.getImageInfo()
+    const width: number = info.size.width
+    const height: number = info.size.height
+
+    // 1）读绘制层像素
+    const byteLength: number = layerPm.getPixelBytesNumber()
     const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
-    await pm.readPixelsToBuffer(buffer)
+    await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
     // 2）通道顺序
@@ -2155,17 +2368,18 @@ struct Index {
 
     const thickRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
     const alpha: number = this.getStrokeAlpha()
-    const drawThickPoint = (px: number, py: number) => {
-      for (let yy = py - thickRadius; yy <= py + thickRadius; yy++) {
+
+    const drawThickPoint = (px: number, py: number): void => {
+      for (let yy: number = py - thickRadius; yy <= py + thickRadius; yy++) {
         if (yy < 0 || yy >= height) {
           continue
         }
-        for (let xx = px - thickRadius; xx <= px + thickRadius; xx++) {
+        for (let xx: number = px - thickRadius; xx <= px + thickRadius; xx++) {
           if (xx < 0 || xx >= width) {
             continue
           }
-          const dx = xx - px
-          const dy = yy - py
+          const dx: number = xx - px
+          const dy: number = yy - py
           if (dx * dx + dy * dy > thickRadius * thickRadius) {
             continue
           }
@@ -2176,10 +2390,15 @@ struct Index {
           const bIndex: number = baseIndex + bOffset
           const aIndex: number = baseIndex + aOffset
 
-          data[rIndex] = this.strokeR
-          data[gIndex] = this.strokeG
-          data[bIndex] = this.strokeB
-          data[aIndex] = alpha
+          if (this.currentBrush === BrushTool.Eraser) {
+            // 橡皮擦：只擦绘制层，让它透明
+            data[aIndex] = 0
+          } else {
+            data[rIndex] = this.strokeR
+            data[gIndex] = this.strokeG
+            data[bIndex] = this.strokeB
+            data[aIndex] = alpha
+          }
         }
       }
     }
@@ -2189,7 +2408,7 @@ struct Index {
     const maxR: number = Math.max(rx, ry)
     const steps: number = Math.max(36, Math.floor(TWO_PI * maxR / 2))
 
-    for (let i = 0; i < steps; i++) {
+    for (let i: number = 0; i < steps; i++) {
       const t: number = (TWO_PI * i) / steps
       const px: number = Math.round(cx + rx * Math.cos(t))
       const py: number = Math.round(cy + ry * Math.sin(t))
@@ -2200,16 +2419,18 @@ struct Index {
       drawThickPoint(px, py)
     }
 
-    // 4）写回像素
-    await pm.writeBufferToPixels(buffer)
+    // 4）写回绘制层像素
+    await layerPm.writeBufferToPixels(buffer)
 
-    // 5）clone 一张新的 PixelMap 触发刷新
-    const newPm: image.PixelMap = await this.clonePixelMap(pm)
-    if (this.pixelMap && this.pixelMap !== newPm) {
-      (this.pixelMap as image.PixelMap).release?.()
+    // 5）clone 一张新的绘制层触发刷新
+    const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
+    if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
+      this.drawPixelMap.release?.()
     }
-    this.pixelMap = newPm
-    this.pixelVersion++
+    this.drawPixelMap = newLayer
+    this.drawPixelVersion++
+
+    console.info(`>>> drawEllipseBetweenPixels: ellipse drawn, drawPixelVersion=${this.drawPixelVersion}`)
   }
 
   // 在自由绘制时，每一小段手势移动，实时画到内存 buffer 里（同步）
@@ -2219,17 +2440,23 @@ struct Index {
     curUiX: number,
     curUiY: number
   ): void {
-    if (!this.pixelMap || !this.freeDrawBuffer || !this.freeDrawArrayBuffer) {
+    // 这里要求：已经在手势开始的时候初始化好 freeDrawArrayBuffer / freeDrawBuffer，
+    // 且它是基于 “绘制层 drawPixelMap（如果有）或者底图 pixelMap” 的像素数据。
+    if (!this.freeDrawBuffer || !this.freeDrawArrayBuffer) {
+      return
+    }
+    if (!this.pixelMap && !this.drawPixelMap) {
       return
     }
 
-    const pm: image.PixelMap = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = pm.getImageInfoSync()
+    // ✅ 优先使用绘制层的尺寸 / 像素格式
+    const basePm: image.PixelMap = (this.drawPixelMap ?? this.pixelMap) as image.PixelMap
+    const info: image.ImageInfo = basePm.getImageInfoSync()
 
     const imgW: number = info.size.width
     const imgH: number = info.size.height
 
-    // UI → 像素映射
+    // —— UI → 像素映射，逻辑跟你之前完全一样 ——
     const scaleBase: number = Math.min(
       this.canvasWidth / imgW,
       this.canvasHeight / imgH
@@ -2314,6 +2541,7 @@ struct Index {
 
     const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
     const alpha: number = this.getStrokeAlpha()
+
     const drawThickPoint = (cx: number, cy: number): void => {
       for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
         if (yy < 0 || yy >= height) {
@@ -2341,15 +2569,21 @@ struct Index {
             continue
           }
 
-          buffer[rIndex] = this.strokeR
-          buffer[gIndex] = this.strokeG
-          buffer[bIndex] = this.strokeB
-          buffer[aIndex] = alpha
+          if (this.currentBrush === BrushTool.Eraser) {
+            // 🧽 橡皮擦：只把绘制层擦透明
+            buffer[aIndex] = 0
+          } else {
+            // 普通画笔 / 荧光笔：用当前笔刷颜色 + 透明度
+            buffer[rIndex] = this.strokeR
+            buffer[gIndex] = this.strokeG
+            buffer[bIndex] = this.strokeB
+            buffer[aIndex] = alpha
+          }
         }
       }
     }
 
-    // Bresenham 画线（和你前面 drawLineBetweenPixels 一致的思路）
+    // —— 下面 Bresenham 画线保持不变 ——
     let curX: number = x0
     let curY: number = y0
     const dx: number = Math.abs(x1 - x0)
