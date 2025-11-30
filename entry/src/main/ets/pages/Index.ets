@@ -5,6 +5,8 @@ import { fileIo } from '@kit.CoreFileKit'
 import { common } from '@kit.AbilityKit'
 import { BusinessError } from '@kit.BasicServicesKit'
 import { effectKit } from '@kit.ArkGraphics2D'
+// entry/src/main/ets/pages/Index.ets
+import { ColorWheelPicker } from './ColorPicker'
 
 
 // 自定义错误类型
@@ -85,7 +87,7 @@ struct Index {
   @State currentTool: string = '' // 当前选择的工具类型（point/line/rect...）
   @State activeMenu: TopMenu = TopMenu.None // 当前展开的顶栏菜单
   @State currentShape: ShapeTool = ShapeTool.None
-  @State currentBrush: BrushTool = BrushTool.None
+  @State currentBrush: BrushTool = BrushTool.Pen // 默认就是普通画笔
   // 顶部菜单当前选中的一级菜单：image / shape / brush / ''(不显示二级)
   @State currentMenu: string = 'image'
   // 当前二级菜单（形状 / 画笔才会使用）
@@ -272,42 +274,42 @@ struct Index {
                     .fontSize(11)
                     .backgroundColor(this.currentShape === ShapeTool.Point ? '#2563EB' : '#E5F3FF')
                     .fontColor(this.currentShape === ShapeTool.Point ? '#FFFFFF' : '#1D4ED8')
-                    .onClick(() => this.currentShape = ShapeTool.Point)
+                    .onClick(() => this.selectShape(ShapeTool.Point))
 
                   Button('直线', { type: ButtonType.Normal })
                     .height(28)
                     .fontSize(11)
                     .backgroundColor(this.currentShape === ShapeTool.Line ? '#2563EB' : '#E5F3FF')
                     .fontColor(this.currentShape === ShapeTool.Line ? '#FFFFFF' : '#1D4ED8')
-                    .onClick(() => this.currentShape = ShapeTool.Line)
+                    .onClick(() => this.selectShape(ShapeTool.Line))
 
                   Button('矩形', { type: ButtonType.Normal })
                     .height(28)
                     .fontSize(11)
                     .backgroundColor(this.currentShape === ShapeTool.Rect ? '#2563EB' : '#E5F3FF')
                     .fontColor(this.currentShape === ShapeTool.Rect ? '#FFFFFF' : '#1D4ED8')
-                    .onClick(() => this.currentShape = ShapeTool.Rect)
+                    .onClick(() => this.selectShape(ShapeTool.Rect))
 
                   Button('圆', { type: ButtonType.Normal })
                     .height(28)
                     .fontSize(11)
                     .backgroundColor(this.currentShape === ShapeTool.Circle ? '#2563EB' : '#E5F3FF')
                     .fontColor(this.currentShape === ShapeTool.Circle ? '#FFFFFF' : '#1D4ED8')
-                    .onClick(() => this.currentShape = ShapeTool.Circle)
+                    .onClick(() => this.selectShape(ShapeTool.Circle))
 
                   Button('椭圆', { type: ButtonType.Normal })
                     .height(28)
                     .fontSize(11)
                     .backgroundColor(this.currentShape === ShapeTool.Ellipse ? '#2563EB' : '#E5F3FF')
                     .fontColor(this.currentShape === ShapeTool.Ellipse ? '#FFFFFF' : '#1D4ED8')
-                    .onClick(() => this.currentShape = ShapeTool.Ellipse)
+                    .onClick(() => this.selectShape(ShapeTool.Ellipse))
 
                   Button('线条', { type: ButtonType.Normal })
                     .height(28)
                     .fontSize(11)
                     .backgroundColor(this.currentShape === ShapeTool.FreeDraw ? '#2563EB' : '#E5F3FF')
                     .fontColor(this.currentShape === ShapeTool.FreeDraw ? '#FFFFFF' : '#1D4ED8')
-                    .onClick(() => this.currentShape = ShapeTool.FreeDraw)
+                    .onClick(() => this.selectShape(ShapeTool.FreeDraw))
 
                 }
                 .height(32)
@@ -320,20 +322,6 @@ struct Index {
             } else if (this.currentMenu === 'brush') {
               Scroll() {
                 Column() {
-
-                  // ===== 第 1 行：橡皮擦 =====
-                  Row({ space: 8 }) {
-                    Button('橡皮擦', { type: ButtonType.Normal })
-                      .height(28)
-                      .fontSize(11)
-                      .backgroundColor(this.currentBrush === BrushTool.Eraser ? '#FB923C' : '#FEF3C7')
-                      .fontColor(this.currentBrush === BrushTool.Eraser ? '#FFFFFF' : '#92400E')
-                      .onClick(() => {
-                        this.currentBrush = BrushTool.Eraser
-                      })
-                  }
-                  .height(32)
-                  .padding({ left: 4, right: 4, bottom: 4 })
 
 
                   // ===== 第 2 行：粗细调节 Slider =====
@@ -392,62 +380,52 @@ struct Index {
                   .alignItems(VerticalAlign.Center)
 
 
-                  // ===== 第 4 行：颜色选择（全局颜色，形状 + 画笔共用） =====
-                  Row({ space: 8 }) {
-                    // 黑色
-                    Button('', { type: ButtonType.Normal })
-                      .width(24)
-                      .height(24)
-                      .backgroundColor('#000000')
-                      .borderRadius(12)
-                      .border({ width: 1, color: '#E5E7EB' })
-                      .onClick(() => {
-                        this.strokeR = 0
-                        this.strokeG = 0
-                        this.strokeB = 0
-                      })
+                  // ---- 第五行：颜色预览（可选） ----
+                  Row() {
+                    // ===== 第 1 行：橡皮擦 =====
+                    Row({ space: 8 }) {
+                      Button('橡皮擦', { type: ButtonType.Normal })
+                        .height(28)
+                        .fontSize(11)
+                        .backgroundColor(this.currentBrush === BrushTool.Eraser ? '#FB923C' : '#FEF3C7')
+                        .fontColor(this.currentBrush === BrushTool.Eraser ? '#FFFFFF' : '#92400E')
+                        .onClick(() => {
+                          if (this.currentBrush === BrushTool.Eraser) {
+                            // 👉 再点一次：关闭橡皮擦，恢复普通画笔
+                            this.currentBrush = BrushTool.Pen
+                            // 自由画保持不变，用户可以继续用普通画笔自由画
+                          } else {
+                            // 👉 第一次点：开启橡皮擦 + 进入自由绘制模式
+                            this.currentBrush = BrushTool.Eraser
+                            this.currentShape = ShapeTool.FreeDraw
+                          }
+                        })
 
-                    // 红色
-                    Button('', { type: ButtonType.Normal })
-                      .width(24)
-                      .height(24)
-                      .backgroundColor('#EF4444')
-                      .borderRadius(12)
-                      .border({ width: 1, color: '#E5E7EB' })
-                      .onClick(() => {
-                        this.strokeR = 239
-                        this.strokeG = 68
-                        this.strokeB = 68
-                      })
+                    }
+                    .height(32)
+                    .padding({ left: 4, right: 4, bottom: 4 })
 
-                    // 绿色
-                    Button('', { type: ButtonType.Normal })
-                      .width(24)
-                      .height(24)
-                      .backgroundColor('#22C55E')
-                      .borderRadius(12)
-                      .border({ width: 1, color: '#E5E7EB' })
-                      .onClick(() => {
-                        this.strokeR = 34
-                        this.strokeG = 197
-                        this.strokeB = 94
-                      })
+                    ColorWheelPicker({
+                      strokeR: $strokeR,
+                      strokeG: $strokeG,
+                      strokeB: $strokeB
+                    }).margin({ top: 6 })
 
-                    // 蓝色
-                    Button('', { type: ButtonType.Normal })
+                    Text('当前颜色预览').fontSize(14)
+
+                    Blank()
                       .width(24)
                       .height(24)
-                      .backgroundColor('#3B82F6')
-                      .borderRadius(12)
-                      .border({ width: 1, color: '#E5E7EB' })
-                      .onClick(() => {
-                        this.strokeR = 59
-                        this.strokeG = 130
-                        this.strokeB = 246
-                      })
+                      .backgroundColor(
+                        // strokeR/G/B 是 0~255，需要组装成 0xAARRGGBB
+                        (0xFF000000 +
+                          (this.strokeR << 16) +
+                          (this.strokeG << 8) +
+                        this.strokeB)
+                      )
+                      .border({ width: 1, color: '#111827' })
+                      .margin({ left: 8 })
                   }
-                  .height(32)
-                  .padding({ left: 4, right: 4 })
 
                 }
               }
@@ -1023,11 +1001,19 @@ struct Index {
       const context = getContext(this) as common.UIAbilityContext
       const helper = photoAccessHelper.getPhotoAccessHelper(context)
 
-      // 保存前把亮度真正写进像素
-      const pm: image.PixelMap = this.pixelMap as image.PixelMap
-      await this.bakeToneToPixelMap(pm)
+      // 1) 克隆一份底图，用于保存
+      const basePm: image.PixelMap = this.pixelMap as image.PixelMap
+      const pmForSave: image.PixelMap = await this.clonePixelMap(basePm)
 
-      // 下面保持原来的保存逻辑不变，用 pm 保存
+      // 2) 有绘制层的话，先合成上去
+      if (this.drawPixelMap) {
+        await this.mergeDrawLayerIntoBase(pmForSave, this.drawPixelMap as image.PixelMap)
+      }
+
+      // 3) 把亮度/对比度烘焙进 pmForSave（只影响保存，不改真实状态）
+      await this.bakeToneForSave(pmForSave)
+
+      // 4) 正常 packToFile 保存 pmForSave ...
       const uri: string = await helper.createAsset(
         photoAccessHelper.PhotoType.IMAGE,
         'jpg'
@@ -1046,7 +1032,7 @@ struct Index {
 
       await new Promise<void>((resolve, reject) => {
         packer.packToFile(
-          pm, // ← 用已经烘焙亮度后的 pixelMap
+          pmForSave,
           file.fd,
           packOpts,
           (err: BusinessError) => err ? reject(err) : resolve()
@@ -1064,93 +1050,166 @@ struct Index {
     }
   }
 
+  // 裁剪当前图片（支持缩放 + 平移 + 叠加绘制层）
+  // 裁剪当前图片，并让笔刷粗细按裁剪比例自动变细
   private async doCrop() {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
-    const info = await pm.getImageInfo()
+    // 画布尺寸防御
+    if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
+      console.warn('[doCrop] canvas size is 0')
+      promptAction.showToast({ message: '画布区域未初始化' })
+      this.cropMode = false
+      return
+    }
 
-    // 求实际显示尺寸（考虑 contain + zoom）
-    const scaleBase = Math.min(
-      this.canvasWidth / info.size.width,
-      this.canvasHeight / info.size.height
+    const pm: image.PixelMap = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+    const imgW: number = info.size.width
+    const imgH: number = info.size.height
+
+    console.info(`[doCrop] imgSize = ${imgW}x${imgH}`)
+    console.info(`[doCrop] canvas = ${this.canvasWidth}x${this.canvasHeight}`)
+    console.info(`[doCrop] crop-ui start=(${this.cropStartX},${this.cropStartY}), end=(${this.cropEndX},${this.cropEndY})`)
+
+    // ===== 1. 计算图片在画布上的显示区域（contain + zoom + 平移） =====
+    const scaleBase: number = Math.min(
+      this.canvasWidth / imgW,
+      this.canvasHeight / imgH
     )
+    if (scaleBase <= 0) {
+      console.warn('[doCrop] scaleBase <= 0')
+      promptAction.showToast({ message: '裁剪失败：画布缩放异常' })
+      this.cropMode = false
+      return
+    }
 
-    const realW = info.size.width * scaleBase * this.zoom
-    const realH = info.size.height * scaleBase * this.zoom
+    const realW: number = imgW * scaleBase * this.zoom
+    const realH: number = imgH * scaleBase * this.zoom
 
-    // 图片左上角（受 offsetX/Y 影响）
-    const imageLeft = (this.canvasWidth - realW) / 2 + this.offsetX
-    const imageTop = (this.canvasHeight - realH) / 2 + this.offsetY
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+    const imageRight: number = imageLeft + realW
+    const imageBottom: number = imageTop + realH
 
-    // UI 裁剪框（未裁边界前）
-    let uiX1 = Math.min(this.cropStartX, this.cropEndX)
-    let uiY1 = Math.min(this.cropStartY, this.cropEndY)
-    let uiX2 = Math.max(this.cropStartX, this.cropEndX)
-    let uiY2 = Math.max(this.cropStartY, this.cropEndY)
+    console.info(`[doCrop] imgRectOnCanvas = (${imageLeft},${imageTop})-(${imageRight},${imageBottom})`)
 
-    // 将裁剪框限制到图片所在区域
-    const imgX1 = imageLeft
-    const imgY1 = imageTop
-    const imgX2 = imageLeft + realW
-    const imgY2 = imageTop + realH
+    // ===== 2. UI 裁剪框，与图片显示区域求交集 =====
+    let uiX1: number = Math.min(this.cropStartX, this.cropEndX)
+    let uiY1: number = Math.min(this.cropStartY, this.cropEndY)
+    let uiX2: number = Math.max(this.cropStartX, this.cropEndX)
+    let uiY2: number = Math.max(this.cropStartY, this.cropEndY)
 
-    // 与图片显示区域求交集
-    uiX1 = Math.max(uiX1, imgX1)
-    uiY1 = Math.max(uiY1, imgY1)
-    uiX2 = Math.min(uiX2, imgX2)
-    uiY2 = Math.min(uiY2, imgY2)
+    // 判定是否真的拖出一个区域
+    if (Math.abs(uiX2 - uiX1) < 3 || Math.abs(uiY2 - uiY1) < 3) {
+      console.info('[doCrop] crop rect too small (ui)')
+      promptAction.showToast({ message: '请拖出一个裁剪区域' })
+      this.cropMode = false
+      return
+    }
 
-    // 若交集无效，直接结束
+    // 和图片显示区域求交集，避免超出图片
+    uiX1 = Math.max(uiX1, imageLeft)
+    uiY1 = Math.max(uiY1, imageTop)
+    uiX2 = Math.min(uiX2, imageRight)
+    uiY2 = Math.min(uiY2, imageBottom)
+
     if (uiX2 <= uiX1 || uiY2 <= uiY1) {
+      console.info('[doCrop] intersect empty')
       promptAction.showToast({ message: '裁剪区域超出图片范围' })
       this.cropMode = false
       return
     }
 
-    // 映射到像素坐标
-    const px1 = (uiX1 - imageLeft) * (info.size.width / realW)
-    const py1 = (uiY1 - imageTop) * (info.size.height / realH)
-    const px2 = (uiX2 - imageLeft) * (info.size.width / realW)
-    const py2 = (uiY2 - imageTop) * (info.size.height / realH)
+    console.info(`[doCrop] crop-ui intersect = (${uiX1},${uiY1})-(${uiX2},${uiY2})`)
 
-    const cropX = Math.max(0, Math.floor(px1))
-    const cropY = Math.max(0, Math.floor(py1))
-    const cropW = Math.floor(px2 - px1)
-    const cropH = Math.floor(py2 - py1)
+    // ===== 3. UI -> 像素坐标 =====
+    const px1: number = (uiX1 - imageLeft) * (imgW / realW)
+    const py1: number = (uiY1 - imageTop) * (imgH / realH)
+    const px2: number = (uiX2 - imageLeft) * (imgW / realW)
+    const py2: number = (uiY2 - imageTop) * (imgH / realH)
 
-    if (cropW <= 0 || cropH <= 0) {
+    let cropX: number = Math.max(0, Math.floor(px1))
+    let cropY: number = Math.max(0, Math.floor(py1))
+    let cropW: number = Math.floor(px2 - px1)
+    let cropH: number = Math.floor(py2 - py1)
+
+    // 和原始像素尺寸再做一次裁剪，防止越界
+    if (cropX + cropW > imgW) {
+      cropW = imgW - cropX
+    }
+    if (cropY + cropH > imgH) {
+      cropH = imgH - cropY
+    }
+
+    console.info(`[doCrop] cropPixel = x=${cropX}, y=${cropY}, w=${cropW}, h=${cropH}`)
+
+    if (cropW <= 1 || cropH <= 1) {
+      console.info('[doCrop] cropPixel too small')
       promptAction.showToast({ message: '裁剪区域太小' })
       this.cropMode = false
       return
     }
 
-    // ========= 核心修改部分开始 =========
-
-    // 1) 先 clone 一份“裁剪前的完整图”作为历史快照
-    const backupPm = await this.clonePixelMap(pm)
+    // ===== 4. 裁剪前快照（支持撤销） =====
+    const backupPm: image.PixelMap = await this.clonePixelMap(pm)
     await this.pushHistorySnapshot(true, backupPm)
 
-    // 2) 在当前 pixelMap 上原地裁剪（保持 this.pixelMap 引用不变）
+    // ===== 5. 在底图上做裁剪（ArkTS 6.0：crop 返回 Promise<void>，就地修改） =====
     await pm.crop({
       x: cropX,
       y: cropY,
       size: { width: cropW, height: cropH }
     })
 
-    // ========= 核心修改部分结束 =========
+    // 同步裁剪绘制层（前提是大小匹配）
+    if (this.drawPixelMap) {
+      const overlayPm: image.PixelMap = this.drawPixelMap as image.PixelMap
+      const overInfo: image.ImageInfo = await overlayPm.getImageInfo()
 
-    // 完成后复位视图
+      if (overInfo.size.width === imgW && overInfo.size.height === imgH) {
+        await overlayPm.crop({
+          x: cropX,
+          y: cropY,
+          size: { width: cropW, height: cropH }
+        })
+        this.drawPixelVersion++ // 让 overlay 那层刷新
+      } else {
+        console.warn('[doCrop] overlay size mismatch, skip overlay crop')
+      }
+    }
+
+    // ===== 6. 根据裁剪比例自动缩小笔刷粗细（关键点） =====
+    const oldDiag: number = Math.sqrt(imgW * imgW + imgH * imgH)
+    const newDiag: number = Math.sqrt(cropW * cropW + cropH * cropH)
+
+    if (oldDiag > 0 && newDiag > 0) {
+      const ratio: number = newDiag / oldDiag // < 1 表示变小
+      const oldStroke: number = this.strokeWidth
+
+      // 让“屏幕上看到的粗细” 按同样比例变细
+      this.strokeWidth = Math.max(1, oldStroke * ratio)
+
+      console.info(`[doCrop] strokeWidth ${oldStroke} -> ${this.strokeWidth} (ratio=${ratio})`)
+    }
+
+    // ===== 7. 为 resetView 更新原图快照（此时原图就是裁剪后的图） =====
+    if (this.originalPixelMap) {
+      this.originalPixelMap.release?.()
+    }
+    this.originalPixelMap = await this.clonePixelMap(pm)
+
+    // ===== 8. 复位视图参数 & UI 状态 =====
     this.cropMode = false
     this.zoom = 1
     this.offsetX = 0
     this.offsetY = 0
     this.pixelVersion++
 
-    // 清空裁剪框，避免上次残留
+    // 清空裁剪框数据，避免残影
     this.cropStartX = 0
     this.cropStartY = 0
     this.cropEndX = 0
@@ -1399,8 +1458,12 @@ struct Index {
   }
 
   private selectShape(shape: ShapeTool) {
-    // 先只记录当前形状，真正绘制逻辑以后再加
     this.currentShape = shape
+
+    // 如果之前是橡皮擦，切换形状时自动恢复为普通画笔
+    if (this.currentBrush === BrushTool.Eraser) {
+      this.currentBrush = BrushTool.Pen
+    }
   }
 
   private selectBrush(brush: BrushTool) {
@@ -1575,7 +1638,8 @@ struct Index {
         break
     }
 
-    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    // imgW / imgH 前面已经算过
+    const radius: number = this.computeStrokeRadiusPixel(imgW, imgH)
     const alpha: number = this.getStrokeAlpha()
 
     for (let yy: number = py - radius; yy <= py + radius; yy++) {
@@ -1753,7 +1817,7 @@ struct Index {
         break
     }
 
-    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    const radius: number = this.computeStrokeRadiusPixel(width, height)
     const alpha: number = this.getStrokeAlpha()
 
     const drawThickPoint = (cx: number, cy: number): void => {
@@ -1958,7 +2022,7 @@ struct Index {
         break
     }
 
-    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    const radius: number = this.computeStrokeRadiusPixel(width, height)
     const alpha: number = this.getStrokeAlpha()
 
     const drawThickPoint = (cx: number, cy: number): void => {
@@ -2100,7 +2164,8 @@ struct Index {
         break
     }
 
-    const strokeRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    const strokeRadius: number = this.computeStrokeRadiusPixel(width, height)
+
     const alpha: number = this.getStrokeAlpha()
 
     const drawThickPoint = (px: number, py: number): void => {
@@ -2366,7 +2431,7 @@ struct Index {
         break
     }
 
-    const thickRadius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    const thickRadius: number = this.computeStrokeRadiusPixel(width, height)
     const alpha: number = this.getStrokeAlpha()
 
     const drawThickPoint = (px: number, py: number): void => {
@@ -2539,7 +2604,7 @@ struct Index {
         break
     }
 
-    const radius: number = this.strokeWidth > 0 ? this.strokeWidth : 4
+    const radius: number = this.computeStrokeRadiusPixel(imgW, imgH)
     const alpha: number = this.getStrokeAlpha()
 
     const drawThickPoint = (cx: number, cy: number): void => {
@@ -2616,44 +2681,53 @@ struct Index {
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
+    // ✅ 自由绘制只针对绘制层，如果还没有绘制层，先创建一张全透明的
+    const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
+    if (!layerPm) {
+      return
+    }
 
     this.freeBufferReady = false
 
-    this.freeDrawByteLength = pm.getPixelBytesNumber()
+    this.freeDrawByteLength = layerPm.getPixelBytesNumber()
     this.freeDrawArrayBuffer = new ArrayBuffer(this.freeDrawByteLength)
 
-    // 异步读取像素（不能在手势里 await）
-    pm.readPixelsToBuffer(this.freeDrawArrayBuffer).then(() => {
-      this.freeDrawBuffer = new Uint8Array(this.freeDrawArrayBuffer!)
+    // 异步读取绘制层像素（不能在手势里 await）
+    layerPm.readPixelsToBuffer(this.freeDrawArrayBuffer).then(() => {
+      this.freeDrawBuffer = new Uint8Array(this.freeDrawArrayBuffer as ArrayBuffer)
       this.freeBufferReady = true
     })
   }
 
   private async handleFreeDrawEnd(): Promise<void> {
-    // 这里不再检查 isFreeDrawing，只检查当前工具 & pixelMap
+    // 只在 FreeDraw 模式下结束自由绘制
     if (this.currentShape !== ShapeTool.FreeDraw || !this.pixelMap) {
       return
     }
 
     this.isFreeDrawing = false
 
-    const pm: image.PixelMap = this.pixelMap as image.PixelMap
+    // ✅ 自由绘制作用于绘制层，如果没有则直接返回
+    const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
+    if (!layerPm) {
+      this.freeDrawBuffer = null
+      this.freeDrawArrayBuffer = null
+      return
+    }
 
-    // 1) 把最后的内存 buffer 写回 pixelMap
+    // 1) 把最终的内存 buffer 写回绘制层 pixelMap
     if (this.freeDrawArrayBuffer) {
-      await pm.writeBufferToPixels(this.freeDrawArrayBuffer)
+      await layerPm.writeBufferToPixels(this.freeDrawArrayBuffer)
     }
 
-    // 2) clone 一份新的 PixelMap —— 触发真正的 UI 刷新
-    const newPm: image.PixelMap = await this.clonePixelMap(pm)
+    // 2) clone 一份新的绘制层 —— 触发 UI 刷新（与其它图形绘制逻辑保持一致）
+    const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
 
-    if (this.pixelMap && this.pixelMap !== newPm) {
-      (this.pixelMap as image.PixelMap).release?.()
+    if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
+      this.drawPixelMap.release?.()
     }
-
-    this.pixelMap = newPm
-    this.pixelVersion++ // Image() 会刷新
+    this.drawPixelMap = newLayer
+    this.drawPixelVersion++ // Image(drawPixelMap) 会刷新
 
     // 3) 清空缓存
     this.freeDrawBuffer = null
@@ -2677,5 +2751,234 @@ struct Index {
       a = 255
     }
     return a
+  }
+
+  // 把 overlayPm（drawPixelMap）按 alpha 合成到 basePm 上（只修改 basePm）
+  // 把绘制图层 overlayPm “盖”到 basePm 上：
+  // 只要 overlay 像素 alpha > 0，就直接用 overlay 的 RGBA 覆盖 base 对应像素
+  private async mergeDrawLayerIntoBase(
+    basePm: image.PixelMap,
+    overlayPm: image.PixelMap
+  ): Promise<void> {
+    const baseInfo: image.ImageInfo = await basePm.getImageInfo()
+    const overInfo: image.ImageInfo = await overlayPm.getImageInfo()
+
+    const width: number = baseInfo.size.width
+    const height: number = baseInfo.size.height
+
+    // 尺寸对不上，先尽量不崩，直接返回（下面第 2 步会保证裁剪时同步裁剪绘制层）
+    if (overInfo.size.width !== width || overInfo.size.height !== height) {
+      console.warn(
+        `mergeDrawLayerIntoBase: size mismatch base=${width}x${height} over=${overInfo.size.width}x${overInfo.size.height}`
+      )
+      return
+    }
+
+    const baseLen: number = basePm.getPixelBytesNumber()
+    const overLen: number = overlayPm.getPixelBytesNumber()
+
+    const baseBuf: ArrayBuffer = new ArrayBuffer(baseLen)
+    const overBuf: ArrayBuffer = new ArrayBuffer(overLen)
+
+    await basePm.readPixelsToBuffer(baseBuf)
+    await overlayPm.readPixelsToBuffer(overBuf)
+
+    const baseData: Uint8Array = new Uint8Array(baseBuf)
+    const overData: Uint8Array = new Uint8Array(overBuf)
+
+    // ------- base 通道偏移 -------
+    let brOff: number = 0
+    let bgOff: number = 1
+    let bbOff: number = 2
+    let baOff: number = 3
+
+    switch (baseInfo.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        bbOff = 0
+        bgOff = 1
+        brOff = 2
+        baOff = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        baOff = 0
+        brOff = 1
+        bgOff = 2
+        bbOff = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        brOff = 0
+        bgOff = 1
+        bbOff = 2
+        baOff = 3
+        break
+    }
+
+    // ------- overlay 通道偏移 -------
+    let orOff: number = 0
+    let ogOff: number = 1
+    let obOff: number = 2
+    let oaOff: number = 3
+
+    switch (overInfo.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        obOff = 0
+        ogOff = 1
+        orOff = 2
+        oaOff = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        oaOff = 0
+        orOff = 1
+        ogOff = 2
+        obOff = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        orOff = 0
+        ogOff = 1
+        obOff = 2
+        oaOff = 3
+        break
+    }
+
+    // ------- 简单粗暴：只要 overlay alpha > 0，就覆盖 base -------
+    for (let y: number = 0; y < height; y++) {
+      for (let x: number = 0; x < width; x++) {
+        const idx: number = (y * width + x) * 4
+
+        const oaIdx: number = idx + oaOff
+        const alphaOver: number = overData[oaIdx]
+
+        if (alphaOver === 0) {
+          // 没画东西/被橡皮擦擦掉的区域 → 直接跳过
+          continue
+        }
+
+        const orIdx: number = idx + orOff
+        const ogIdx: number = idx + ogOff
+        const obIdx: number = idx + obOff
+
+        const brIdx: number = idx + brOff
+        const bgIdx: number = idx + bgOff
+        const bbIdx: number = idx + bbOff
+        const baIdx: number = idx + baOff
+
+        baseData[brIdx] = overData[orIdx]
+        baseData[bgIdx] = overData[ogIdx]
+        baseData[bbIdx] = overData[obIdx]
+        baseData[baIdx] = alphaOver // 或者 255，看你需求，这里保留 overlay 原始 alpha
+      }
+    }
+
+    await basePm.writeBufferToPixels(baseBuf)
+  }
+
+  // 仅用于“保存图片”：把当前 brightnessLevel / contrastLevel 烘焙到给定 pm，但不修改 this.brightnessLevel / this.contrastLevel
+  private async bakeToneForSave(pm: image.PixelMap): Promise<void> {
+    // 当前没有调整就直接不处理
+    if (this.brightnessLevel === 0 && this.contrastLevel === 0) {
+      return
+    }
+
+    const info: image.ImageInfo = await pm.getImageInfo()
+    const byteLength: number = pm.getPixelBytesNumber()
+    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+    await pm.readPixelsToBuffer(buffer)
+    const data: Uint8Array = new Uint8Array(buffer)
+
+    // 通道顺序
+    let rOffset: number = 0
+    let gOffset: number = 1
+    let bOffset: number = 2
+    let aOffset: number = 3
+
+    switch (info.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        bOffset = 0
+        gOffset = 1
+        rOffset = 2
+        aOffset = 3
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        aOffset = 0
+        rOffset = 1
+        gOffset = 2
+        bOffset = 3
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        rOffset = 0
+        gOffset = 1
+        bOffset = 2
+        aOffset = 3
+        break
+    }
+
+    // 和你原来一致的亮度/对比度计算
+    const c: number = 1.0 + this.contrastLevel
+    const shiftBrightness: number = this.brightnessLevel * 255.0
+    const shiftTotal: number = 128.0 * (1.0 - c) + shiftBrightness
+
+    const clamp = (v: number): number => {
+      if (v < 0) {
+        return 0
+      }
+      if (v > 255) {
+        return 255
+      }
+      return v
+    }
+
+    for (let i: number = 0; i < data.length; i += 4) {
+      const rIndex: number = i + rOffset
+      const gIndex: number = i + gOffset
+      const bIndex: number = i + bOffset
+      const aIndex: number = i + aOffset
+
+      const r = data[rIndex]
+      const g = data[gIndex]
+      const b = data[bIndex]
+
+      data[rIndex] = clamp(c * r + shiftTotal)
+      data[gIndex] = clamp(c * g + shiftTotal)
+      data[bIndex] = clamp(c * b + shiftTotal)
+      data[aIndex] = data[aIndex] // alpha 不变
+    }
+
+    await pm.writeBufferToPixels(buffer)
+  }
+
+  // 把「屏幕粗细」strokeWidth 换算成「图像像素半径」
+  // imgW / imgH 是当前图片（或绘制层）的像素尺寸
+  // 把“屏幕上粗细” strokeWidth 换算成“图像里的像素半径”
+  // imgW / imgH 是当前图像（或绘制层）的像素尺寸
+  private computeStrokeRadiusPixel(imgW: number, imgH: number): number {
+    const MIN_RADIUS: number = 1
+
+    if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
+      // 兜底：画布尺寸异常时，直接用 strokeWidth 当像素半径
+      return Math.max(MIN_RADIUS, Math.floor(this.strokeWidth))
+    }
+
+    // 和 UI→像素映射保持同一套缩放：contain 缩放 * 当前缩放因子
+    const scaleBase: number = Math.min(
+      this.canvasWidth / imgW,
+      this.canvasHeight / imgH
+    )
+    const realScale: number = scaleBase * this.zoom
+
+    if (realScale <= 0) {
+      return Math.max(MIN_RADIUS, Math.floor(this.strokeWidth))
+    }
+
+    // strokeWidth 是“屏幕上的半径（px）”，除以 realScale 得到“图像像素半径”
+    let r: number = this.strokeWidth / realScale
+
+    if (r < MIN_RADIUS) {
+      r = MIN_RADIUS
+    }
+
+    return Math.floor(r)
   }
 }
