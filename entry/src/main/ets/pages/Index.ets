@@ -132,6 +132,8 @@ struct Index {
   private freeDrawArrayBuffer: ArrayBuffer | null = null
   private freeDrawByteLength: number = 0
   private freeBufferReady: boolean = false
+  // 当前底图的对角线长度（像素），用于裁剪时温和缩放画笔
+  @State imageDiag: number = 0
 
   build() {
     Column() {
@@ -958,6 +960,12 @@ struct Index {
       this.accumulatedRotate = 0
       this.pixelVersion++
 
+      // 👉 新增：记录当前图片对角线，用于后续裁剪时计算比例
+      const openInfo: image.ImageInfo = await pm.getImageInfo()
+      const openW: number = openInfo.size.width
+      const openH: number = openInfo.size.height
+      this.imageDiag = Math.hypot(openW, openH)
+
       // ========== 新增：为这张图片创建一层透明的绘制层 ==========
       if (this.drawPixelMap) {
         this.drawPixelMap.release?.()
@@ -1052,37 +1060,34 @@ struct Index {
 
   // 裁剪当前图片（支持缩放 + 平移 + 叠加绘制层）
   // 裁剪当前图片，并让笔刷粗细按裁剪比例自动变细
-  private async doCrop() {
+  // 裁剪：根据当前裁剪框，把底图和绘制层一起裁剪，并“温和”调整画笔粗细
+  private async doCrop(): Promise<void> {
     if (!this.pixelMap) {
       promptAction.showToast({ message: '请先打开图片' })
       return
     }
 
-    // 画布尺寸防御
+    const pm: image.PixelMap = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    // 画布尺寸、防御
     if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
-      console.warn('[doCrop] canvas size is 0')
-      promptAction.showToast({ message: '画布区域未初始化' })
+      promptAction.showToast({ message: '画布尚未初始化' })
       this.cropMode = false
       return
     }
 
-    const pm: image.PixelMap = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
+    // === 1. 计算图片在画布上的实际显示区域（考虑 contain + zoom + 平移）===
     const imgW: number = info.size.width
     const imgH: number = info.size.height
 
-    console.info(`[doCrop] imgSize = ${imgW}x${imgH}`)
-    console.info(`[doCrop] canvas = ${this.canvasWidth}x${this.canvasHeight}`)
-    console.info(`[doCrop] crop-ui start=(${this.cropStartX},${this.cropStartY}), end=(${this.cropEndX},${this.cropEndY})`)
-
-    // ===== 1. 计算图片在画布上的显示区域（contain + zoom + 平移） =====
     const scaleBase: number = Math.min(
       this.canvasWidth / imgW,
       this.canvasHeight / imgH
     )
+
     if (scaleBase <= 0) {
-      console.warn('[doCrop] scaleBase <= 0')
-      promptAction.showToast({ message: '裁剪失败：画布缩放异常' })
+      promptAction.showToast({ message: '缩放参数异常' })
       this.cropMode = false
       return
     }
@@ -1095,121 +1100,110 @@ struct Index {
     const imageRight: number = imageLeft + realW
     const imageBottom: number = imageTop + realH
 
-    console.info(`[doCrop] imgRectOnCanvas = (${imageLeft},${imageTop})-(${imageRight},${imageBottom})`)
-
-    // ===== 2. UI 裁剪框，与图片显示区域求交集 =====
+    // === 2. 读取 UI 裁剪框，并与图片显示区域求交集 ===
     let uiX1: number = Math.min(this.cropStartX, this.cropEndX)
     let uiY1: number = Math.min(this.cropStartY, this.cropEndY)
     let uiX2: number = Math.max(this.cropStartX, this.cropEndX)
     let uiY2: number = Math.max(this.cropStartY, this.cropEndY)
 
-    // 判定是否真的拖出一个区域
-    if (Math.abs(uiX2 - uiX1) < 3 || Math.abs(uiY2 - uiY1) < 3) {
-      console.info('[doCrop] crop rect too small (ui)')
-      promptAction.showToast({ message: '请拖出一个裁剪区域' })
-      this.cropMode = false
-      return
-    }
-
-    // 和图片显示区域求交集，避免超出图片
+    // 和图片可见区域求交
     uiX1 = Math.max(uiX1, imageLeft)
     uiY1 = Math.max(uiY1, imageTop)
     uiX2 = Math.min(uiX2, imageRight)
     uiY2 = Math.min(uiY2, imageBottom)
 
     if (uiX2 <= uiX1 || uiY2 <= uiY1) {
-      console.info('[doCrop] intersect empty')
       promptAction.showToast({ message: '裁剪区域超出图片范围' })
       this.cropMode = false
       return
     }
 
-    console.info(`[doCrop] crop-ui intersect = (${uiX1},${uiY1})-(${uiX2},${uiY2})`)
+    // === 3. UI 坐标映射到像素坐标 ===
+    const px1Float: number = (uiX1 - imageLeft) * (imgW / realW)
+    const py1Float: number = (uiY1 - imageTop) * (imgH / realH)
+    const px2Float: number = (uiX2 - imageLeft) * (imgW / realW)
+    const py2Float: number = (uiY2 - imageTop) * (imgH / realH)
 
-    // ===== 3. UI -> 像素坐标 =====
-    const px1: number = (uiX1 - imageLeft) * (imgW / realW)
-    const py1: number = (uiY1 - imageTop) * (imgH / realH)
-    const px2: number = (uiX2 - imageLeft) * (imgW / realW)
-    const py2: number = (uiY2 - imageTop) * (imgH / realH)
+    const cropX: number = Math.max(0, Math.floor(px1Float))
+    const cropY: number = Math.max(0, Math.floor(py1Float))
+    const cropW: number = Math.floor(px2Float - px1Float)
+    const cropH: number = Math.floor(py2Float - py1Float)
 
-    let cropX: number = Math.max(0, Math.floor(px1))
-    let cropY: number = Math.max(0, Math.floor(py1))
-    let cropW: number = Math.floor(px2 - px1)
-    let cropH: number = Math.floor(py2 - py1)
-
-    // 和原始像素尺寸再做一次裁剪，防止越界
-    if (cropX + cropW > imgW) {
-      cropW = imgW - cropX
-    }
-    if (cropY + cropH > imgH) {
-      cropH = imgH - cropY
-    }
-
-    console.info(`[doCrop] cropPixel = x=${cropX}, y=${cropY}, w=${cropW}, h=${cropH}`)
-
-    if (cropW <= 1 || cropH <= 1) {
-      console.info('[doCrop] cropPixel too small')
+    if (cropW <= 0 || cropH <= 0) {
       promptAction.showToast({ message: '裁剪区域太小' })
       this.cropMode = false
       return
     }
 
-    // ===== 4. 裁剪前快照（支持撤销） =====
+    // ========= 4. 真正裁剪（底图 + 绘制层），并记录撤销 =========
+
+    // 4.1 裁剪前备份一份完整底图（用于撤销）
     const backupPm: image.PixelMap = await this.clonePixelMap(pm)
     await this.pushHistorySnapshot(true, backupPm)
 
-    // ===== 5. 在底图上做裁剪（ArkTS 6.0：crop 返回 Promise<void>，就地修改） =====
+    // 4.2 在当前 pixelMap 上原地裁剪（引用不变）
     await pm.crop({
       x: cropX,
       y: cropY,
       size: { width: cropW, height: cropH }
     })
 
-    // 同步裁剪绘制层（前提是大小匹配）
+    // 4.3 若存在绘制图层，同步裁剪同一区域，保证尺寸对齐
     if (this.drawPixelMap) {
       const overlayPm: image.PixelMap = this.drawPixelMap as image.PixelMap
-      const overInfo: image.ImageInfo = await overlayPm.getImageInfo()
-
-      if (overInfo.size.width === imgW && overInfo.size.height === imgH) {
+      try {
         await overlayPm.crop({
           x: cropX,
           y: cropY,
           size: { width: cropW, height: cropH }
         })
-        this.drawPixelVersion++ // 让 overlay 那层刷新
-      } else {
-        console.warn('[doCrop] overlay size mismatch, skip overlay crop')
+        this.drawPixelVersion++
+      } catch (e) {
+        const err: Error = e as Error
+        console.warn(`crop drawPixelMap failed: ${err.message}`)
       }
     }
 
-    // ===== 6. 根据裁剪比例自动缩小笔刷粗细（关键点） =====
-    const oldDiag: number = Math.sqrt(imgW * imgW + imgH * imgH)
+    // ========= 5. 温和调整画笔粗细（避免一次裁剪变化过猛） =========
+
+    // 旧对角线：优先用 imageDiag（如果你在打开图片或 reset 时有设置）
+    const oldDiag: number = this.imageDiag > 0
+      ? this.imageDiag
+      : Math.sqrt(imgW * imgW + imgH * imgH)
+
     const newDiag: number = Math.sqrt(cropW * cropW + cropH * cropH)
 
     if (oldDiag > 0 && newDiag > 0) {
-      const ratio: number = newDiag / oldDiag // < 1 表示变小
-      const oldStroke: number = this.strokeWidth
+      const rawRatio: number = newDiag / oldDiag // <1 表示图变小
 
-      // 让“屏幕上看到的粗细” 按同样比例变细
-      this.strokeWidth = Math.max(1, oldStroke * ratio)
+      // 这里是“温和缩放”：
+      // - 不放大画笔：ratio 最大 1.0
+      // - 每次最多缩小到 80%：ratio 最小 0.8
+      let ratio: number = rawRatio
+      if (ratio > 1.0) {
+        ratio = 1.0
+      }
+      if (ratio < 0.8) {
+        ratio = 0.8
+      }
 
-      console.info(`[doCrop] strokeWidth ${oldStroke} -> ${this.strokeWidth} (ratio=${ratio})`)
+      // 应用缩放，最低不小于 1 像素
+      this.strokeWidth = Math.max(1, this.strokeWidth * ratio)
+
+      // 更新当前图片对角线，作为下一次裁剪的基准
+      this.imageDiag = newDiag
+    } else {
+      // 兜底：无法计算时，只记录新对角线，不调整画笔
+      this.imageDiag = newDiag
     }
 
-    // ===== 7. 为 resetView 更新原图快照（此时原图就是裁剪后的图） =====
-    if (this.originalPixelMap) {
-      this.originalPixelMap.release?.()
-    }
-    this.originalPixelMap = await this.clonePixelMap(pm)
-
-    // ===== 8. 复位视图参数 & UI 状态 =====
+    // ========= 6. 收尾：复位视图 / 清理状态 =========
     this.cropMode = false
-    this.zoom = 1
+    this.zoom = 1.0
     this.offsetX = 0
     this.offsetY = 0
     this.pixelVersion++
 
-    // 清空裁剪框数据，避免残影
     this.cropStartX = 0
     this.cropStartY = 0
     this.cropEndX = 0
