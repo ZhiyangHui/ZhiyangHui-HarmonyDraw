@@ -1,105 +1,51 @@
-// collaborate_server/server.js
-// 最小多人协作 WebSocket 服务端（适配 ArkTS 客户端）
-// 启动后访问 ws://<ip>:8080/collab?roomId=xxx&userId=xxx
-
+// =============================
+//  WebSocket 协作服务器（最终版本）
+// =============================
 const WebSocket = require('ws');
-const { URL } = require('url');
+const os = require('os');
 
-// 房间 -> 客户端集合
-const rooms = new Map();
+const PORT = 8080;
 
-// 创建 WebSocket Server
-const wss = new WebSocket.Server({ port: 8080 });
+// 创建 WebSocketServer（注意 ws 模块这里叫 WebSocketServer）
+const wss = new WebSocket.WebSocketServer({
+    port: PORT,
+    path: '/collab'
+});
 
-console.log("🚀 协作服务器已启动: ws://0.0.0.0:8080/collab");
-
-// 加入房间
-function joinRoom(roomId, ws) {
-    if (!rooms.has(roomId)) {
-        rooms.set(roomId, new Set());
-    }
-    rooms.get(roomId).add(ws);
-}
-
-// 离开房间
-function leaveRoom(roomId, ws) {
-    if (!rooms.has(roomId)) {
-        return;
-    }
-    rooms.get(roomId).delete(ws);
-    if (rooms.get(roomId).size === 0) {
-        rooms.delete(roomId);
-    }
-}
-
-// 广播消息（除了自己）
-function broadcast(roomId, senderId, msgObject) {
-    const json = JSON.stringify(msgObject);
-    const clients = rooms.get(roomId);
-    if (!clients) {
-        return;
-    }
-
-    for (const client of clients) {
-        if (client.readyState === WebSocket.OPEN && client.userId !== senderId) {
-            client.send(json);
+// ===== 获取本机 IPv4 地址（用于打印给你看） =====
+function getLocalIPv4() {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name] || []) {
+            if (net.family === 'IPv4' && !net.internal) {
+                return net.address; // 比如 192.168.1.11
+            }
         }
     }
+    return '127.0.0.1';
 }
 
-// 有客户端连接
-wss.on("connection", (ws, req) => {
-    const fullUrl = new URL(req.url, `http://${req.headers.host}`);
-    const roomId = fullUrl.searchParams.get("roomId") || "default";
-    const userId = fullUrl.searchParams.get("userId") || ("U" + Math.random().toString(16).slice(2));
+// ====== 打印服务器启动信息 ======
+const ip = getLocalIPv4();
+console.log(`🚀 协作服务器已启动: ws://${ip}:${PORT}/collab`);
 
-    ws.roomId = roomId;
-    ws.userId = userId;
 
-    console.log(`🟢 客户端连接: roomId=${roomId}, userId=${userId}`);
+// ====== WebSocket 事件 ======
+wss.on('connection', ws => {
+    console.log('🌐 新客户端已连接');
 
-    joinRoom(roomId, ws);
+    ws.on('message', msg => {
+        console.log('📩 收到消息:', msg.toString());
 
-    // 告诉客户端连接成功
-    ws.send(JSON.stringify({
-        type: "system",
-        event: "connected",
-        roomId,
-        userId
-    }));
-
-    // 收到客户端消息
-    ws.on("message", (data) => {
-        const text = data.toString();
-        console.log(`📩 来自 ${userId} 的消息: ${text}`);
-
-        let msg = null;
-        try {
-            msg = JSON.parse(text);
-        } catch (e) {
-            ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
-            return;
-        }
-
-        // 加上标识，传给别人
-        const wrapped = {
-            ...msg,
-            roomId,
-            fromUserId: userId
-        };
-
-        // 广播给房间的人
-        broadcast(roomId, userId, wrapped);
+        // 广播给所有客户端（除了自己）
+        wss.clients.forEach(client => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+                client.send(msg.toString());
+            }
+        });
     });
 
-    // 断开
-    ws.on("close", () => {
-        console.log(`🔴 客户端断开: ${userId}`);
-        leaveRoom(roomId, ws);
-    });
-
-    // 错误
-    ws.on("error", (err) => {
-        console.error(`⚠ WS 错误 (userId=${userId}):`, err.message);
+    ws.on('close', () => {
+        console.log('❌ 客户端断开连接');
     });
 });
