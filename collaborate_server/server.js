@@ -49,3 +49,41 @@ wss.on('connection', ws => {
         console.log('❌ 客户端断开连接');
     });
 });
+
+
+let nextId = 1;
+const colors = ['#EF4444', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6'];
+
+wss.on('connection', (ws) => {
+    const clientId = 'user-' + nextId.toString();
+    const color = colors[(nextId - 1) % colors.length];
+    nextId += 1;
+
+    // 挂到 ws 对象上，后面转发消息用
+    ws.clientId = clientId;
+    ws.displayColor = color;
+
+    console.log(`🌐 新客户端已连接: ${clientId}`);
+
+    // 主动告诉这个客户端：你的 id 和 颜色
+    const assignMsg = {
+        type: 'assignId',
+        clientId: clientId,
+        payload: {
+            displayColor: color
+        }
+    };
+    ws.send(JSON.stringify(assignMsg));
+
+    ws.on('message', (msg) => {
+        console.log(`📩 收到消息: ${msg.toString()}`);
+
+        // 把消息转给其他所有客户端
+        wss.clients.forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+                client.send(msg.toString());
+            }
+        });
+    });
+});
+

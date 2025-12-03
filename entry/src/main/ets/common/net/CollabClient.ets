@@ -2,37 +2,66 @@
 import { webSocket } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
-// ==== 协作消息类型定义（你可以按需扩展） ====
+// ========== 协作消息类型定义 ==========
 
-export type CollabMessageType = 'join' | 'leave' | 'stroke' | 'clear';
+// ==== 新增：服务器给客户端分配身份的 payload ====
+export interface CollabAssignIdPayload {
+  displayColor: string; // 例如 '#EF4444'
+}
 
+// 所有消息类型（加上 'assignId'）
+export type CollabMessageType = 'assignId' | 'join' | 'leave' | 'stroke' | 'clear';
+
+export interface CollabMessage {
+  type: CollabMessageType;
+  clientId: string;
+  payload?: CollabStrokePayload | CollabClearPayload | CollabAssignIdPayload;
+}
+
+
+// 单个笔迹点
 export interface StrokePoint {
   x: number;
   y: number;
   pressure: number; // 0~1
   color: string; // '#RRGGBB'
-  width: number; // 画笔宽度
+  width: number; // 画笔宽度（屏幕像素）
 }
 
-// 根据你自己的协议来定，这里举例 stroke / clear 类消息
+// 笔迹消息的 payload
 export interface CollabStrokePayload {
-  points: StrokePoint[];
   layerId: string;
+  points: Array<StrokePoint>;
+  color: string;
+  width: number;
 }
 
+// 清空图层消息的 payload
 export interface CollabClearPayload {
   layerId: string;
 }
 
-export interface CollabMessage {
-  type: CollabMessageType;
-  clientId: string;
+// 所有 payload 的联合类型
+export type CollabPayload = CollabStrokePayload | CollabClearPayload;
 
-  // 这里用联合类型，避免 any / unknown
-  payload?: CollabStrokePayload | CollabClearPayload;
+// ==== 工具函数：构造 “清空图层” 消息 ====
+
+// 注意：这里用显式的 interface 类型，ArkTS 认可，不会报 untyped object literal
+export function buildClearMessage(clientId: string, layerId: string): CollabMessage {
+  const payload: CollabClearPayload = {
+    layerId: layerId
+  };
+
+  const msg: CollabMessage = {
+    type: 'clear',
+    clientId: clientId,
+    payload: payload
+  };
+
+  return msg;
 }
 
-// ==== 回调类型 ====
+// ========== 回调类型定义 ==========
 
 export type CollabMsgCallback = (msg: CollabMessage) => void;
 
@@ -40,7 +69,7 @@ export type CollabErrorCallback = (msg: string) => void;
 
 export type CollabStateCallback = () => void;
 
-// ==== WebSocket 客户端封装 ====
+// ========== WebSocket 客户端封装 ==========
 
 export class CollabClient {
   private url: string;
@@ -83,8 +112,8 @@ export class CollabClient {
     const socket: webSocket.WebSocket = webSocket.createWebSocket();
     this.ws = socket;
 
-    // --- 订阅 open 事件 ---
-    socket.on('open', (err: BusinessError, value: Object) => {
+    // --- open 事件 ---
+    socket.on('open', (err: BusinessError, _value: Object) => {
       if (err) {
         this.reportError('WebSocket open error: ' + JSON.stringify(err));
         return;
@@ -95,24 +124,23 @@ export class CollabClient {
       }
     });
 
-    // --- 订阅 message 事件（重点：签名必须是 (err, value)） ---
+    // --- message 事件 ---
     socket.on('message', (err: BusinessError, data: string | ArrayBuffer) => {
       if (err) {
         this.reportError('WebSocket message error: ' + JSON.stringify(err));
         return;
       }
 
-      // 服务器现在用文本 JSON，所以先确保是 string
       if (typeof data === 'string') {
         this.handleTextMessage(data);
       } else {
-        // 如果以后你想支持二进制，这里可以再扩展
+        // 后面你要支持二进制再扩展
         this.reportError('Unsupported binary message from server');
       }
     });
 
-    // --- 订阅 close 事件 ---
-    socket.on('close', (err: BusinessError, result: webSocket.CloseResult) => {
+    // --- close 事件 ---
+    socket.on('close', (err: BusinessError, _result: webSocket.CloseResult) => {
       this.isConnected = false;
       if (err) {
         this.reportError('WebSocket close error: ' + JSON.stringify(err));
@@ -122,7 +150,7 @@ export class CollabClient {
       }
     });
 
-    // --- 订阅 error 事件 ---
+    // --- error 事件 ---
     socket.on('error', (err: BusinessError) => {
       this.isConnected = false;
       this.reportError('WebSocket error: ' + JSON.stringify(err));
@@ -137,7 +165,7 @@ export class CollabClient {
       if (!value) {
         this.reportError('WebSocket connect failed, value=false');
       }
-      // 这里真正的“连上”还要等 on('open') 回调
+      // 真正 ready 还是看 on('open')
     });
   }
 
@@ -150,8 +178,8 @@ export class CollabClient {
       return;
     }
 
-    let text: string = JSON.stringify(msg);
-    let promise: Promise<boolean> = this.ws.send(text);
+    const text: string = JSON.stringify(msg);
+    const promise: Promise<boolean> = this.ws.send(text);
     promise.then((ok: boolean) => {
       if (!ok) {
         this.reportError('WebSocket send returned false');
@@ -162,7 +190,7 @@ export class CollabClient {
   }
 
   /**
-   * 主动关闭连接（给页面用）
+   * 主动关闭连接
    */
   close(): void {
     this.safeCloseInner();
@@ -177,11 +205,10 @@ export class CollabClient {
     if (this.ws === null) {
       return;
     }
-    let socket: webSocket.WebSocket = this.ws;
-    // 使用 Promise 版 close，避免 callback 里再套一层
-    let promise: Promise<boolean> = socket.close();
+    const socket: webSocket.WebSocket = this.ws;
+    const promise: Promise<boolean> = socket.close();
     promise.then((_value: boolean) => {
-      // 成功关闭，不需要额外处理
+      // ignore
     }).catch((err: string) => {
       this.reportError('WebSocket close error: ' + err);
     });
@@ -193,14 +220,12 @@ export class CollabClient {
   private handleTextMessage(text: string): void {
     let parsed: CollabMessage;
     try {
-      // ArkTS 这边 JSON.parse 默认返回 Object，这里直接断言成 CollabMessage
       parsed = JSON.parse(text) as CollabMessage;
     } catch (_e) {
       this.reportError('JSON parse error: ' + text);
       return;
     }
 
-    // 简单校验 type / clientId，避免完全乱的数据
     if (!parsed || !parsed.type || !parsed.clientId) {
       this.reportError('Invalid collab message: ' + text);
       return;
@@ -222,7 +247,7 @@ export class CollabClient {
   }
 
   /**
-   * 提供一个状态查询
+   * 对外提供连接状态
    */
   get connected(): boolean {
     return this.isConnected;

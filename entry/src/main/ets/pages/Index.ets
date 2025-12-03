@@ -7,7 +7,7 @@ import { BusinessError } from '@kit.BasicServicesKit'
 import { effectKit } from '@kit.ArkGraphics2D'
 // entry/src/main/ets/pages/Index.ets
 import { ColorWheelPicker } from './ColorPicker'
-
+import { CollabClient, CollabMessage, buildClearMessage, CollabAssignIdPayload } from '../common/net/CollabClient';
 
 // 自定义错误类型
 interface ErrorWithCode {
@@ -15,16 +15,13 @@ interface ErrorWithCode {
   message?: string
 }
 
-// 每一步画布状态快照，用于撤销
-// interface CanvasSnapshot {
-//   pixelMap?: image.PixelMap
-//   zoom: number
-//   offsetX: number
-//   offsetY: number
-//   brightnessLevel: number
-//   contrastLevel: number
-//   accumulatedRotate: number
-// }
+// 在线用户信息
+interface OnlineUserInfo {
+  clientId: string; // 从协作消息里的 clientId 拿
+  displayColor: string; // 每个 client 用一个固定颜色
+  isSelf: boolean; // 是否是本机
+}
+
 interface CanvasSnapshot {
   pixelMap?: image.PixelMap // 底图快照
   drawPixelMap?: image.PixelMap // ⭐ 新增：绘制图层快照
@@ -134,12 +131,87 @@ struct Index {
   private freeBufferReady: boolean = false
   // 当前底图的对角线长度（像素），用于裁剪时温和缩放画笔
   @State imageDiag: number = 0
+  // ==== 新增：协作 WebSocket 客户端 ====
+  // 把下面的 192.168.1.100 换成你运行 Node.js 服务器那台电脑的局域网 IP
+  // 不能用 0.0.0.0，要用具体 IP，比如 192.168.0.5
+  private collabClient: CollabClient = new CollabClient(
+    'ws://192.168.1.11:8080/collab'
+  );
+  // 给当前设备一个固定 id（不要每次点击都变）
+  @State localClientId: string = ''; // 服务器分配给自己的 id
+  @State localColor: string = '#000000'; // 自己的代表色
+  // 在线用户列表（包含自己和别人）
+  @State onlineUsers: Array<OnlineUserInfo> = [];
+  // 本机 clientId（给 CollabClient 用的那个 id，要保持一致）
+  private clientId: string = 'client-' + Date.now().toString();
+  // 简单的颜色池，按顺序给不同用户分颜色
+  private userColorPalette: Array<string> = [
+    '#2563EB', // 蓝
+    '#EC4899', // 粉
+    '#10B981', // 绿
+    '#F97316', // 橙
+    '#A855F7',// 紫
+  ];
+  private nextColorIndex: number = 0;
+
+  // ====== 新增：生命周期里初始化 / 关闭 WebSocket ======
+  // ====== 生命周期：页面出现时初始化 WebSocket ======
+  aboutToAppear(): void {
+    this.collabClient.setCallbacks(
+      () => {
+        // onOpen
+        console.log('[Collab] WebSocket open');
+
+        // ✅ 自己的颜色：由 clientId 决定（稳定）
+        const selfColor: string = this.pickColorForClient(this.clientId);
+        this.localColor = selfColor;
+
+        const selfUser: OnlineUserInfo = {
+          clientId: this.clientId,
+          displayColor: selfColor,
+          isSelf: true
+        };
+        this.onlineUsers = [selfUser];
+      },
+      () => {
+        console.log('[Collab] WebSocket close');
+        this.onlineUsers = [];
+      },
+      (msg: CollabMessage) => {
+        console.log('[Collab] message = ' + JSON.stringify(msg));
+
+        // 🔴 远端用户：根据 msg.clientId 注册，颜色由 clientId 决定
+        if (msg.clientId && msg.clientId !== this.clientId) {
+          this.ensureRemoteUser(msg.clientId);
+        }
+
+        if (msg.type === 'clear') {
+          console.log('[Collab] remote clear layer, do resetView()');
+          this.resetView();
+        }
+
+        // 以后你这里可以加 stroke 等其他类型：
+        // if (msg.type === 'stroke') { ... }
+      },
+      (err: string) => {
+        console.error('[Collab] error = ' + err);
+      }
+    );
+
+    this.collabClient.connect();
+  }
+
+  aboutToDisappear(): void {
+    // 页面销毁时记得断开连接
+    this.collabClient.close();
+  }
 
   build() {
     Column() {
       // 顶部工具栏
       Column() {
         Column() {
+
           // 顶部工具栏
           Column() {
             // === 一级菜单：图片操作 / 形状 / 画笔 / 撤销 ===
@@ -437,6 +509,35 @@ struct Index {
             }
           }
 
+          // ===== 顶部：在线协作用户条 =====
+          Row({ space: 8 }) {
+            ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
+              Row() {
+                // 🔥 不同颜色的矩形
+                Blank()
+                  .width(20)
+                  .height(12)
+                  .backgroundColor(u.displayColor)
+                  .borderRadius(3) // 或者用 0 = 纯矩形
+                  .margin({ right: 6 })
+
+                Text(u.isSelf ? '我 (' + u.clientId + ')' : u.clientId)
+                  .fontSize(11)
+                  .fontColor('#111827')
+              }
+              .padding({
+                left: 8,
+                right: 8,
+                top: 4,
+                bottom: 4
+              })
+              .backgroundColor('#F3F4F6')
+              .borderRadius(8)
+            }, (u: OnlineUserInfo) => u.clientId)
+          }
+          .margin({ top: 12, left: 12, right: 12 })
+
+
           // 画布
           Stack() {
             if (!this.pixelMap) {
@@ -717,7 +818,21 @@ struct Index {
               .padding({ left: 14, right: 14 })
               .backgroundColor('#EEF2FF')
               .fontColor('#3B82F6')
-              .onClick(() => this.resetView())
+              .onClick(() => {
+                // ① 本地重置
+                this.resetView();
+
+                // ② 如果 WebSocket 已连接，同步发一条消息
+                if (this.collabClient.connected) {
+                  const msg: CollabMessage = buildClearMessage(
+                    this.localClientId, // 和上面的 localClientId 保持一致
+                    'main-layer'        // 你自己的图层 id
+                  );
+                  this.collabClient.send(msg);
+                } else {
+                  console.error('[Collab] not connected, skip send clear');
+                }
+              })
           }
           .width('100%')
           .padding({
@@ -2974,5 +3089,42 @@ struct Index {
     }
 
     return Math.floor(r)
+  }
+
+  private ensureRemoteUser(clientId: string): void {
+    // 已经存在就不重复添加
+    const existed: OnlineUserInfo | undefined = this.onlineUsers
+      .find((u: OnlineUserInfo) => u.clientId === clientId);
+    if (existed) {
+      return;
+    }
+
+    // 🎨 关键：颜色由 clientId 决定
+    const color: string = this.pickColorForClient(clientId);
+
+    const remoteUser: OnlineUserInfo = {
+      clientId: clientId,
+      displayColor: color,
+      isSelf: false
+    };
+
+    this.onlineUsers = [...this.onlineUsers, remoteUser];
+  }
+
+  // 根据 clientId 算一个稳定的颜色索引，同一个 clientId 在任何设备上都一样
+  // 根据 clientId 选择一个稳定的颜色：同一个 clientId → 同一个颜色
+  private pickColorForClient(clientId: string): string {
+    let hash: number = 0;
+    for (let i = 0; i < clientId.length; i++) {
+      hash = (hash * 31 + clientId.charCodeAt(i)) >>> 0; // 无符号 32bit
+    }
+
+    const paletteSize: number = this.userColorPalette.length;
+    if (paletteSize === 0) {
+      return '#000000'; // 兜底
+    }
+
+    const idx: number = hash % paletteSize;
+    return this.userColorPalette[idx];
   }
 }
