@@ -4,10 +4,17 @@ import { image } from '@kit.ImageKit'
 import { fileIo } from '@kit.CoreFileKit'
 import { common } from '@kit.AbilityKit'
 import { BusinessError } from '@kit.BasicServicesKit'
-import { effectKit } from '@kit.ArkGraphics2D'
+import util from '@ohos.util'
+
 // entry/src/main/ets/pages/Index.ets
 import { ColorWheelPicker } from './ColorPicker'
-import { CollabClient, CollabMessage, buildClearMessage, CollabAssignIdPayload } from '../common/net/CollabClient';
+import {
+  CollabClient,
+  CollabMessage,
+  buildClearMessage,
+  CollabAssignIdPayload,
+  CollabImageSyncPayload
+} from '../common/net/CollabClient';
 
 // 自定义错误类型
 interface ErrorWithCode {
@@ -188,6 +195,17 @@ struct Index {
         if (msg.type === 'clear') {
           console.log('[Collab] remote clear layer, do resetView()');
           this.resetView();
+        }
+
+        // ✅ 新增：收到图片同步消息
+        if (msg.type === 'imageSync') {
+          const payload = msg.payload as CollabImageSyncPayload;
+          console.info('[Collab] receive image-sync from: ' + msg.clientId);
+
+          this.applyRemoteImage(payload).then(() => {
+            console.info('[Collab] remote image applied');
+            promptAction.showToast({ message: '已加载协作图片' })
+          })
         }
 
         // 以后你这里可以加 stroke 等其他类型：
@@ -1088,7 +1106,9 @@ struct Index {
       this.drawPixelMap = await this.createEmptyDrawLayerLike(pm)
       this.drawPixelVersion++
       // =========================================================
-
+      if (this.collabClient.connected && this.pixelMap) {
+        await this.broadcastImageToPeers(this.pixelMap as image.PixelMap);
+      }
       promptAction.showToast({ message: '图片已加载 ' })
     } catch (err) {
       let code = 'NA'
@@ -3126,5 +3146,101 @@ struct Index {
 
     const idx: number = hash % paletteSize;
     return this.userColorPalette[idx];
+  }
+
+  // 把当前 PixelMap 打包成 PNG + base64，通过 WebSocket 发给所有人
+  private async broadcastImageToPeers(pm: image.PixelMap): Promise<void> {
+    // 1) pack 成 PNG 的 ArrayBuffer
+    const packer = image.createImagePacker()
+    const packOpts: image.PackingOption = {
+      format: 'image/png',
+      quality: 100
+    }
+    const pngBuffer: ArrayBuffer = await packer.packToData(pm, packOpts)
+    packer.release?.()
+
+    // 2) ArrayBuffer -> base64（这里写成辅助函数，你可以按 HarmonyOS 6.0 可用的 Base64 API 实现）
+    const pngBase64: string = this.arrayBufferToBase64(pngBuffer)
+
+    // 3) 组装协作消息
+    const msg: CollabMessage = {
+      type: 'imageSync',
+      clientId: this.clientId, // 或 this.localClientId，看你哪一个最终作为“自己”的 id
+      payload: {
+        format: 'image/png',
+        dataBase64: pngBase64
+      } as CollabImageSyncPayload
+    }
+
+    this.collabClient.send(msg)
+    console.info('[Collab] broadcast image-sync, size(base64)=', pngBase64.length)
+  }
+
+  // 把 ArrayBuffer 转成 base64 字符串
+  // ArrayBuffer -> base64 字符串
+  // ArrayBuffer -> base64 string
+  private arrayBufferToBase64(buf: ArrayBuffer): string {
+    // 显式类型：Uint8Array
+    const uint8: Uint8Array = new Uint8Array(buf)
+    const base64Helper: util.Base64Helper = new util.Base64Helper()
+    const base64Str: string = base64Helper.encodeToStringSync(uint8)
+    return base64Str
+  }
+
+  // base64 string -> ArrayBuffer
+  private base64ToArrayBuffer(b64: string): ArrayBuffer {
+    const base64Helper: util.Base64Helper = new util.Base64Helper()
+    // decodeSync 返回 Uint8Array
+    const uint8: Uint8Array = base64Helper.decodeSync(b64)
+    // Uint8Array 自带 buffer，就是 ArrayBuffer
+    const buf: ArrayBuffer = uint8.buffer as ArrayBuffer
+    return buf
+  }
+
+  // 把远端发来的 base64 PNG 转成 PixelMap 并应用到本地
+  private async applyRemoteImage(payload: CollabImageSyncPayload): Promise<void> {
+    // 1) base64 -> ArrayBuffer
+    const buf: ArrayBuffer = this.base64ToArrayBuffer(payload.dataBase64)
+
+    // 2) decode 成 PixelMap
+    const imgSource = image.createImageSource(buf)
+    const pm: image.PixelMap = await imgSource.createPixelMap({ editable: true })
+    imgSource.release?.()
+
+    // 3) 和 pickImage 里一样的初始化逻辑
+    //    （注意：这里不能用 photoAccessHelper，那只在本地选图时用）
+    if (this.originalPixelMap) {
+      this.originalPixelMap.release?.()
+    }
+    this.originalPixelMap = await this.clonePixelMap(pm)
+
+    if (this.pixelMap) {
+      this.pixelMap.release?.()
+    }
+    this.pixelMap = pm
+
+    this.zoom = 1.0
+    this.offsetX = 0
+    this.offsetY = 0
+    this.brightnessLevel = 0.0
+    this.contrastLevel = 0.0
+    this.accumulatedRotate = 0
+    this.pixelVersion++
+
+    const info: image.ImageInfo = await pm.getImageInfo()
+    const w = info.size.width
+    const h = info.size.height
+    this.imageDiag = Math.hypot(w, h)
+
+    // 重建绘制层
+    if (this.drawPixelMap) {
+      this.drawPixelMap.release?.()
+    }
+    this.drawPixelMap = await this.createEmptyDrawLayerLike(pm)
+    this.drawPixelVersion++
+
+    // 清空历史栈，视为“新打开一张图”
+    this.history = []
+    this.historyIndex = -1
   }
 }

@@ -4,20 +4,29 @@ import { BusinessError } from '@kit.BasicServicesKit';
 
 // ========== 协作消息类型定义 ==========
 
+
+export interface CollabImageSyncPayload {
+  format: string; // 'image/png'
+  dataBase64: string; // 整张图片的 PNG 的 base64
+}
+
+
 // ==== 新增：服务器给客户端分配身份的 payload ====
 export interface CollabAssignIdPayload {
   displayColor: string; // 例如 '#EF4444'
 }
 
 // 所有消息类型（加上 'assignId'）
-export type CollabMessageType = 'assignId' | 'join' | 'leave' | 'stroke' | 'clear';
+export type CollabMessageType =
+  | 'assignId'
+    | 'clear'
+    | 'imageSync'; // ✅ 新增：同步图片
 
 export interface CollabMessage {
   type: CollabMessageType;
   clientId: string;
-  payload?: CollabStrokePayload | CollabClearPayload | CollabAssignIdPayload;
+  payload: CollabAssignIdPayload | CollabClearPayload | CollabImageSyncPayload;
 }
-
 
 // 单个笔迹点
 export interface StrokePoint {
