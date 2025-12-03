@@ -5,7 +5,6 @@ import { fileIo } from '@kit.CoreFileKit'
 import { common } from '@kit.AbilityKit'
 import { BusinessError } from '@kit.BasicServicesKit'
 import util from '@ohos.util'
-
 // entry/src/main/ets/pages/Index.ets
 import { ColorWheelPicker } from './ColorPicker'
 import {
@@ -160,6 +159,8 @@ struct Index {
     '#A855F7',// 紫
   ];
   private nextColorIndex: number = 0;
+  // 是否参与协作（控制是否连 WebSocket）
+  @State collabEnabled: boolean = true;
 
   // ====== 新增：生命周期里初始化 / 关闭 WebSocket ======
   // ====== 生命周期：页面出现时初始化 WebSocket ======
@@ -168,6 +169,13 @@ struct Index {
       () => {
         // onOpen
         console.log('[Collab] WebSocket open');
+
+        if (!this.collabEnabled) {
+          // 万一在关闭状态下连接上了，直接断掉
+          this.collabClient.close();
+          return;
+        }
+
 
         // ✅ 自己的颜色：由 clientId 决定（稳定）
         const selfColor: string = this.pickColorForClient(this.clientId);
@@ -527,33 +535,72 @@ struct Index {
             }
           }
 
-          // ===== 顶部：在线协作用户条 =====
-          Row({ space: 8 }) {
-            ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
-              Row() {
-                // 🔥 不同颜色的矩形
-                Blank()
-                  .width(20)
-                  .height(12)
-                  .backgroundColor(u.displayColor)
-                  .borderRadius(3) // 或者用 0 = 纯矩形
-                  .margin({ right: 6 })
-
-                Text(u.isSelf ? '我 (' + u.clientId + ')' : u.clientId)
-                  .fontSize(11)
-                  .fontColor('#111827')
-              }
-              .padding({
-                left: 8,
-                right: 8,
-                top: 4,
-                bottom: 4
+          // ===== 顶部：在线协作条 =====
+          // ===== 顶部：在线协作条 =====
+          Row() {
+            // 左侧：协作按钮
+            Button(this.collabEnabled ? '断开协作' : '加入协作', { type: ButtonType.Capsule })
+              .height(28)
+              .fontSize(11)
+              .backgroundColor(this.collabEnabled ? '#FEE2E2' : '#DCFCE7')
+              .fontColor(this.collabEnabled ? '#B91C1C' : '#166534')
+              .margin({ right: 10 })
+              .onClick(() => {
+                if (this.collabEnabled) {
+                  this.collabEnabled = false
+                  this.collabClient.close()
+                  this.onlineUsers = []
+                  promptAction.showToast({ message: '已断开协作' })
+                } else {
+                  this.collabEnabled = true
+                  this.collabClient.connect()
+                  promptAction.showToast({ message: '正在加入协作...' })
+                }
               })
-              .backgroundColor('#F3F4F6')
-              .borderRadius(8)
-            }, (u: OnlineUserInfo) => u.clientId)
+
+            // 中间标题
+            Text('在线用户：')
+              .fontSize(12)
+              .fontColor('#6B7280')
+              .margin({ right: 8 })
+
+            // 右侧可滚动区域 —— ArkTS 正确写法
+            Scroll() {
+              Row({ space: 6 }) {
+                ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
+                  Row() {
+                    // 彩色矩形
+                    Rect()
+                      .width(12)
+                      .height(12)
+                      .radius(2)
+                      .fill(u.displayColor)
+                      .margin({ right: 4 })
+
+                    Text(u.isSelf ? '我 (' + u.clientId + ')' : u.clientId)
+                      .fontSize(11)
+                      .fontColor('#111827')
+                  }
+                  .padding({
+                    left: 10,
+                    right: 10,
+                    top: 4,
+                    bottom: 4
+                  })
+                  .backgroundColor(u.isSelf ? '#DBEAFE' : '#E5E7EB')
+                  .borderRadius(999)
+                }, (u: OnlineUserInfo) => u.clientId)
+              }
+            }
+            .layoutWeight(1) // 占满剩余空间
           }
-          .margin({ top: 12, left: 12, right: 12 })
+          .padding({
+            left: 12,
+            right: 12,
+            top: 6,
+            bottom: 6
+          })
+          .backgroundColor('#F9FAFB')
 
 
           // 画布
