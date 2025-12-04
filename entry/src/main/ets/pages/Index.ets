@@ -41,6 +41,13 @@ interface CanvasSnapshot {
   accumulatedRotate: number
 }
 
+interface OperationLogItem {
+  id: number; // 本地自增 id，用来做 ForEach 的 key
+  userId: string; // 哪个用户
+  userColor: string; // 该用户代表色
+  message: string; // 做了什么操作
+  timestamp: string; // 时间戳 HH:MM:SS
+}
 
 enum TopMenu {
   None,
@@ -163,6 +170,9 @@ struct Index {
   private nextColorIndex: number = 0;
   // 是否参与协作（控制是否连 WebSocket）
   @State collabEnabled: boolean = true;
+  @State showOpLog: boolean = false; // 是否展开操作记录面板
+  @State opLogList: Array<OperationLogItem> = []; // 操作记录队列
+  private opSeq: number = 0; // 本地自增 id
 
   // ====== 新增：生命周期里初始化 / 关闭 WebSocket ======
   // ====== 生命周期：页面出现时初始化 WebSocket ======
@@ -237,12 +247,26 @@ struct Index {
         if (msg.type === 'clear') {
           console.log('[Collab] remote clear layer, do resetView()');
           this.resetView();
+
+          // 只记录别的用户的清空操作
+          const selfId: string = this.localClientId || this.clientId;
+          if (msg.clientId && msg.clientId !== selfId) {
+            const color: string = this.pickColorForClient(msg.clientId);
+            this.appendOpLog(msg.clientId, '清空画布', color);
+          }
         }
 
         // ========== ④ imageSync 图片同步 ==========
         if (msg.type === 'imageSync') {
           const payload = msg.payload as CollabImageSyncPayload;
           console.info('[Collab] receive image-sync from: ' + msg.clientId);
+
+          // 记录远端更新画布（同样跳过自己发的 echo）
+          const selfId: string = this.localClientId || this.clientId;
+          if (msg.clientId && msg.clientId !== selfId) {
+            const color: string = this.pickColorForClient(msg.clientId);
+            this.appendOpLog(msg.clientId, '更新了画布', color);
+          }
 
           this.applyRemoteImage(payload).then(() => {
             console.info('[Collab] remote image applied');
@@ -590,6 +614,16 @@ struct Index {
                 }
               })
 
+            Button(this.showOpLog ? '收起记录' : '操作记录', { type: ButtonType.Capsule })
+              .height(24)
+              .fontSize(11)
+              .backgroundColor(this.showOpLog ? '#DBEAFE' : '#E5E7EB')
+              .fontColor('#111827')
+              .onClick(() => {
+                this.showOpLog = !this.showOpLog
+              })
+
+
             // 中间标题
             Text('在线用户：')
               .fontSize(12)
@@ -631,6 +665,52 @@ struct Index {
             bottom: 6
           })
           .backgroundColor('#F9FAFB')
+
+          if (this.showOpLog) {
+            Column() {
+              Scroll() {
+                Column({ space: 4 }) {
+                  ForEach(this.opLogList, (item: OperationLogItem) => {
+                    Row() {
+                      // 左侧用户颜色块
+                      Rect()
+                        .width(10)
+                        .height(10)
+                        .radius(2)
+                        .fill(item.userColor)
+                        .margin({ right: 6 })
+
+                      // 中间文本：时间 + 用户 + 操作内容
+                      Column({ space: 2 }) {
+                        Text(`[${item.timestamp}] ${item.userId}`)
+                          .fontSize(11)
+                          .fontColor('#4B5563')
+
+                        Text(item.message)
+                          .fontSize(11)
+                          .fontColor('#111827')
+                      }
+                    }
+                    .padding({
+                      left: 8,
+                      right: 8,
+                      top: 4,
+                      bottom: 4
+                    })
+                    .backgroundColor('#FFFFFF')
+                    .borderRadius(6)
+                  }, (item: OperationLogItem) => item.id.toString())
+                }
+              }
+              .width('100%')
+              .height(120) // 固定高度，内部可滚动
+
+              // 底部一条淡灰线
+              Divider().strokeWidth(0.5).color('#E5E7EB')
+            }
+            .padding({ left: 12, right: 12, bottom: 6 })
+            .backgroundColor('#F3F4F6')
+          }
 
 
           // 画布
@@ -1450,6 +1530,13 @@ struct Index {
       this.accumulatedRotate = (this.accumulatedRotate + 90) % 360
 
       this.pixelVersion++
+      // ④ 协作：把旋转后的画面同步给其他客户端
+      await this.syncCanvasToOthers()
+
+      // ⑤ 本机写操作记录
+      const selfId: string = this.localClientId || this.clientId
+      this.appendOpLog(selfId, '右旋转 90°', this.localColor)
+
     } catch (err) {
       const e = err as Error
       console.error(`rotateRight90 failed: ${e.message}`)
@@ -1486,6 +1573,12 @@ struct Index {
       this.accumulatedRotate = (this.accumulatedRotate + 270) % 360
 
       this.pixelVersion++
+      // ④ 协作：把旋转后的画面同步给其他客户端
+      await this.syncCanvasToOthers()
+
+      // ⑤ 本机写操作记录
+      const selfId: string = this.localClientId || this.clientId
+      this.appendOpLog(selfId, '右旋转 90°', this.localColor)
     } catch (err) {
       const e = err as Error
       console.error(`rotateLeft90 failed: ${e.message}`)
@@ -3223,6 +3316,59 @@ struct Index {
 
     const idx: number = hash % paletteSize;
     return this.userColorPalette[idx];
+  }
+
+  // 把当前画面同步给其他协作端（不会影响本地撤回栈）
+  private async syncCanvasToOthers(): Promise<void> {
+    // 没开协作、没连上、没图 → 直接不发
+    if (!this.collabEnabled) {
+      return;
+    }
+    if (!this.collabClient || !this.collabClient.connected) {
+      console.info('[Collab] not connected, skip syncCanvasToOthers');
+      return;
+    }
+    if (!this.pixelMap) {
+      console.info('[Collab] no pixelMap, skip syncCanvasToOthers');
+      return;
+    }
+
+    // 用现有的广播函数，把当前底图发出去
+    await this.broadcastImageToPeers(this.pixelMap as image.PixelMap);
+  }
+
+  // ===== 操作记录：追加一条日志 =====
+  private appendOpLog(userId: string, message: string, colorOpt?: string): void {
+    const color: string = colorOpt ?? this.pickColorForClient(userId);
+
+    // 简单时间戳
+    const now: Date = new Date();
+    const ts: string = this.formatTime(now);
+
+    const id: number = ++this.opSeq;
+    const item: OperationLogItem = {
+      id: id,
+      userId: userId,
+      userColor: color,
+      message: message,
+      timestamp: ts
+    };
+
+    // 最多保留 50 条，超过就从前面丢
+    const maxLen: number = 50;
+    const list: Array<OperationLogItem> = [...this.opLogList, item];
+    if (list.length > maxLen) {
+      list.shift();
+    }
+    this.opLogList = list;
+  }
+
+  // 时间格式化 HH:MM:SS
+  private formatTime(d: Date): string {
+    const h: string = d.getHours().toString().padStart(2, '0');
+    const m: string = d.getMinutes().toString().padStart(2, '0');
+    const s: string = d.getSeconds().toString().padStart(2, '0');
+    return `${h}:${m}:${s}`;
   }
 
   // 把当前 PixelMap 打包成 PNG + base64，通过 WebSocket 发给所有人
