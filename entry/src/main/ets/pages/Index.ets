@@ -141,7 +141,7 @@ struct Index {
   // 把下面的 192.168.1.100 换成你运行 Node.js 服务器那台电脑的局域网 IP
   // 不能用 0.0.0.0，要用具体 IP，比如 192.168.0.5
   private collabClient: CollabClient = new CollabClient(
-    'ws://192.168.1.11:8080/collab'
+    'ws://101.43.185.73:8080/collab'
   );
   // 给当前设备一个固定 id（不要每次点击都变）
   @State localClientId: string = ''; // 服务器分配给自己的 id
@@ -171,26 +171,18 @@ struct Index {
         console.log('[Collab] WebSocket open');
 
         if (!this.collabEnabled) {
-          // 万一在关闭状态下连接上了，直接断掉
           this.collabClient.close();
           return;
         }
 
-
-        // ✅ 自己的颜色：由 clientId 决定（稳定）
-        const selfColor: string = this.pickColorForClient(this.clientId);
-        this.localColor = selfColor;
-
-        const selfUser: OnlineUserInfo = {
-          clientId: this.clientId,
-          displayColor: selfColor,
-          isSelf: true
-        };
-        this.onlineUsers = [selfUser];
+        // 注意：不要在这里设置自己的 id/颜色
+        // 等服务器发 assignId 再处理
+        this.onlineUsers = [];
       },
       () => {
         console.log('[Collab] WebSocket close');
         this.onlineUsers = [];
+        this.localClientId = ''; // 断开后清空
       },
       (msg: CollabMessage) => {
         console.log('[Collab] message = ' + JSON.stringify(msg));
@@ -200,30 +192,54 @@ struct Index {
           this.ensureRemoteUser(msg.clientId);
         }
 
+        // ✅ 新增：处理 assignId
+        if (msg.type === 'assignId') {
+          const payload = msg.payload as CollabAssignIdPayload | undefined;
+
+          // 服务器分配给我的真正 clientId
+          this.localClientId = msg.clientId ?? '';
+
+          // 服务器给的颜色优先，其次用本地算法算一个
+          const color: string =
+            (payload && payload.displayColor) ||
+            this.pickColorForClient(this.localClientId || this.clientId);
+
+          this.localColor = color;
+
+          const selfUser: OnlineUserInfo = {
+            clientId: this.localClientId || this.clientId,
+            displayColor: color,
+            isSelf: true
+          };
+          // 在线列表里先放自己，后续再追加其他人
+          this.onlineUsers = [selfUser];
+
+          console.info('[Collab] assigned id = ' + this.localClientId);
+          return; // assignId 消息处理完可以直接 return
+        }
+
         if (msg.type === 'clear') {
           console.log('[Collab] remote clear layer, do resetView()');
           this.resetView();
         }
 
-        // ✅ 新增：收到图片同步消息
+        // ✅ 收到图片同步消息
         if (msg.type === 'imageSync') {
           const payload = msg.payload as CollabImageSyncPayload;
           console.info('[Collab] receive image-sync from: ' + msg.clientId);
 
           this.applyRemoteImage(payload).then(() => {
             console.info('[Collab] remote image applied');
-            promptAction.showToast({ message: '已加载协作图片' })
-          })
+            promptAction.showToast({ message: '已加载协作图片' });
+          });
         }
 
-        // 以后你这里可以加 stroke 等其他类型：
-        // if (msg.type === 'stroke') { ... }
+        // 以后可以在这里扩展 stroke 等类型
       },
       (err: string) => {
         console.error('[Collab] error = ' + err);
       }
     );
-
     this.collabClient.connect();
   }
 
@@ -884,14 +900,14 @@ struct Index {
               .backgroundColor('#EEF2FF')
               .fontColor('#3B82F6')
               .onClick(() => {
-                // ① 本地重置
                 this.resetView();
 
-                // ② 如果 WebSocket 已连接，同步发一条消息
                 if (this.collabClient.connected) {
+                  const senderId: string = this.localClientId || this.clientId;
+
                   const msg: CollabMessage = buildClearMessage(
-                    this.localClientId, // 和上面的 localClientId 保持一致
-                    'main-layer'        // 你自己的图层 id
+                    senderId,
+                    'main-layer'
                   );
                   this.collabClient.send(msg);
                 } else {
@@ -3209,15 +3225,16 @@ struct Index {
     // 2) ArrayBuffer -> base64（这里写成辅助函数，你可以按 HarmonyOS 6.0 可用的 Base64 API 实现）
     const pngBase64: string = this.arrayBufferToBase64(pngBuffer)
 
-    // 3) 组装协作消息
+    const senderId: string = this.localClientId || this.clientId;
+
     const msg: CollabMessage = {
       type: 'imageSync',
-      clientId: this.clientId, // 或 this.localClientId，看你哪一个最终作为“自己”的 id
+      clientId: senderId,
       payload: {
         format: 'image/png',
         dataBase64: pngBase64
       } as CollabImageSyncPayload
-    }
+    };
 
     this.collabClient.send(msg)
     console.info('[Collab] broadcast image-sync, size(base64)=', pngBase64.length)
