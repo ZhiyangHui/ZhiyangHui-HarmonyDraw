@@ -12,7 +12,9 @@ import {
   CollabMessage,
   buildClearMessage,
   CollabAssignIdPayload,
-  CollabImageSyncPayload
+  CollabImageSyncPayload,
+  OnlineUsersPayload,
+  OnlineUserItem
 } from '../common/net/CollabClient';
 
 // 自定义错误类型
@@ -175,8 +177,6 @@ struct Index {
           return;
         }
 
-        // 注意：不要在这里设置自己的 id/颜色
-        // 等服务器发 assignId 再处理
         this.onlineUsers = [];
       },
       () => {
@@ -187,19 +187,19 @@ struct Index {
       (msg: CollabMessage) => {
         console.log('[Collab] message = ' + JSON.stringify(msg));
 
-        // 🔴 远端用户：根据 msg.clientId 注册，颜色由 clientId 决定
+        // 🔴 远端用户：把不等于我的 clientId 的用户加入 remote 列表
         if (msg.clientId && msg.clientId !== this.clientId) {
           this.ensureRemoteUser(msg.clientId);
         }
 
-        // ✅ 新增：处理 assignId
+        // ========== ① 处理 assignId ==========
         if (msg.type === 'assignId') {
           const payload = msg.payload as CollabAssignIdPayload | undefined;
 
           // 服务器分配给我的真正 clientId
           this.localClientId = msg.clientId ?? '';
 
-          // 服务器给的颜色优先，其次用本地算法算一个
+          // 使用服务器给的颜色
           const color: string =
             (payload && payload.displayColor) ||
             this.pickColorForClient(this.localClientId || this.clientId);
@@ -211,19 +211,35 @@ struct Index {
             displayColor: color,
             isSelf: true
           };
-          // 在线列表里先放自己，后续再追加其他人
+
+          // 在线列表里加入自己
           this.onlineUsers = [selfUser];
 
           console.info('[Collab] assigned id = ' + this.localClientId);
-          return; // assignId 消息处理完可以直接 return
+          return;
         }
 
+        // ========== ② ⚡ 处理 onlineUsers 新消息（放在 assignId 后、其他消息前） ==========
+        if (msg.type === 'onlineUsers') {
+          const payload = msg.payload as OnlineUsersPayload;
+          this.onlineUsers = payload.users.map((u: OnlineUserItem): OnlineUserInfo => {
+            const info: OnlineUserInfo = {
+              clientId: u.clientId,
+              displayColor: u.displayColor,
+              isSelf: u.clientId === this.localClientId
+            };
+            return info;
+          });
+        }
+
+
+        // ========== ③ clear 消息 ==========
         if (msg.type === 'clear') {
           console.log('[Collab] remote clear layer, do resetView()');
           this.resetView();
         }
 
-        // ✅ 收到图片同步消息
+        // ========== ④ imageSync 图片同步 ==========
         if (msg.type === 'imageSync') {
           const payload = msg.payload as CollabImageSyncPayload;
           console.info('[Collab] receive image-sync from: ' + msg.clientId);
@@ -234,12 +250,13 @@ struct Index {
           });
         }
 
-        // 以后可以在这里扩展 stroke 等类型
+        // 更多消息类型在这里扩展...
       },
       (err: string) => {
         console.error('[Collab] error = ' + err);
       }
     );
+
     this.collabClient.connect();
   }
 
@@ -552,15 +569,14 @@ struct Index {
           }
 
           // ===== 顶部：在线协作条 =====
-          // ===== 顶部：在线协作条 =====
-          Row() {
+          // 顶部协作栏
+          Row({ space: 8 }) { // 用 space 控制组件之间的固定间距
             // 左侧：协作按钮
             Button(this.collabEnabled ? '断开协作' : '加入协作', { type: ButtonType.Capsule })
               .height(28)
               .fontSize(11)
               .backgroundColor(this.collabEnabled ? '#FEE2E2' : '#DCFCE7')
               .fontColor(this.collabEnabled ? '#B91C1C' : '#166534')
-              .margin({ right: 10 })
               .onClick(() => {
                 if (this.collabEnabled) {
                   this.collabEnabled = false
@@ -578,38 +594,36 @@ struct Index {
             Text('在线用户：')
               .fontSize(12)
               .fontColor('#6B7280')
-              .margin({ right: 8 })
 
-            // 右侧可滚动区域 —— ArkTS 正确写法
-            Scroll() {
-              Row({ space: 6 }) {
-                ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
-                  Row() {
-                    // 彩色矩形
-                    Rect()
-                      .width(12)
-                      .height(12)
-                      .radius(2)
-                      .fill(u.displayColor)
-                      .margin({ right: 4 })
+            // 右侧：在线用户标签（紧挨着“在线用户：”）
+            Row({ space: 6 }) {
+              ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
+                Row() {
+                  // 彩色小方块
+                  Rect()
+                    .width(10)
+                    .height(10)
+                    .radius(2)
+                    .fill(u.displayColor)
+                    .margin({ right: 4 })
 
-                    Text(u.isSelf ? '我 (' + u.clientId + ')' : u.clientId)
-                      .fontSize(11)
-                      .fontColor('#111827')
-                  }
-                  .padding({
-                    left: 10,
-                    right: 10,
-                    top: 4,
-                    bottom: 4
-                  })
-                  .backgroundColor(u.isSelf ? '#DBEAFE' : '#E5E7EB')
-                  .borderRadius(999)
-                }, (u: OnlineUserInfo) => u.clientId)
-              }
+                  Text(u.isSelf ? '我 (' + u.clientId + ')' : u.clientId)
+                    .fontSize(11)
+                    .fontColor('#111827')
+                }
+                .padding({
+                  left: 8,
+                  right: 8,
+                  top: 3,
+                  bottom: 3
+                })
+                .backgroundColor(u.isSelf ? '#DBEAFE' : '#E5E7EB')
+                .borderRadius(999)
+              }, (u: OnlineUserInfo) => u.clientId)
             }
-            .layoutWeight(1) // 占满剩余空间
           }
+          .justifyContent(FlexAlign.Start) // 整行靠左排
+          .alignItems(VerticalAlign.Center) // 垂直居中
           .padding({
             left: 12,
             right: 12,

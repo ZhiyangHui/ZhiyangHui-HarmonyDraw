@@ -3,8 +3,6 @@ import { webSocket } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
 // ========== 协作消息类型定义 ==========
-
-
 export interface CollabImageSyncPayload {
   format: string; // 'image/png'
   dataBase64: string; // 整张图片的 PNG 的 base64
@@ -16,17 +14,34 @@ export interface CollabAssignIdPayload {
   displayColor: string; // 例如 '#EF4444'
 }
 
+export interface OnlineUserItem {
+  clientId: string;
+  displayColor: string;
+}
+
+export interface OnlineUsersPayload {
+  users: Array<OnlineUserItem>;
+}
+
+
 // 所有消息类型（加上 'assignId'）
 export type CollabMessageType =
   | 'assignId'
     | 'clear'
-    | 'imageSync'; // ✅ 新增：同步图片
+    | 'imageSync'
+    | 'onlineUsers'; // ← 新增
+
 
 export interface CollabMessage {
   type: CollabMessageType;
   clientId: string;
-  payload: CollabAssignIdPayload | CollabClearPayload | CollabImageSyncPayload;
+  payload:
+    | CollabAssignIdPayload
+    | CollabClearPayload
+    | CollabImageSyncPayload
+    | OnlineUsersPayload; // ✅ 一定要加这一行
 }
+
 
 // 单个笔迹点
 export interface StrokePoint {
@@ -51,7 +66,13 @@ export interface CollabClearPayload {
 }
 
 // 所有 payload 的联合类型
-export type CollabPayload = CollabStrokePayload | CollabClearPayload;
+export type CollabPayload =
+  CollabStrokePayload
+    | CollabClearPayload
+    | CollabImageSyncPayload
+    | CollabAssignIdPayload
+    | OnlineUsersPayload; // ← 新加入这个
+
 
 // ==== 工具函数：构造 “清空图层” 消息 ====
 
