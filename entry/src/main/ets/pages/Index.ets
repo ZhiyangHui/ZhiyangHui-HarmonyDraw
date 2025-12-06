@@ -595,13 +595,12 @@ struct Index {
           }
 
           // ===== 顶部：在线协作条 =====
-          // 顶部协作栏
-          // ===== 顶部协作 / 在线用户工具栏 =====
-          Row({ space: 8 }) {
-            // 左侧：协作按钮
+          // 顶部：协作 & 在线用户栏
+          Row({ space: 8 }) { // 用较小 space 控制组件之间的固定间距
+            // 左侧：协作按钮（稍微缩小）
             Button(this.collabEnabled ? '断开协作' : '加入协作', { type: ButtonType.Capsule })
-              .height(28)
-              .fontSize(11)
+              .height(24)             // 原来 28，稍微缩小
+              .fontSize(10)           // 原来 11
               .backgroundColor(this.collabEnabled ? '#FEE2E2' : '#DCFCE7')
               .fontColor(this.collabEnabled ? '#B91C1C' : '#166534')
               .onClick(() => {
@@ -617,64 +616,68 @@ struct Index {
                 }
               })
 
+            // 操作记录按钮（也缩小一点）
             Button(this.showOpLog ? '收起记录' : '操作记录', { type: ButtonType.Capsule })
-              .height(24)
-              .fontSize(11)
+              .height(22)             // 原来 24
+              .fontSize(10)           // 原来 11
               .backgroundColor(this.showOpLog ? '#DBEAFE' : '#E5E7EB')
               .fontColor('#111827')
               .onClick(() => {
                 this.showOpLog = !this.showOpLog
               })
 
-            // 中间标题（固定，不滚动）
-            Text('在线用户：')
-              .fontSize(12)
-              .fontColor('#6B7280')
-
-            // 右侧：在线用户标签 ———> 外面套一层横向 Scroll
+            // 在线用户区域整体放到一个水平 Scroll 里
+            // 这样当用户很多时可以左右滑动
             Scroll() {
-              Row({ space: 6 }) {
-                ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
-                  Row() {
-                    Rect()
-                      .width(10)
-                      .height(10)
-                      .radius(2)
-                      .fill(u.displayColor)
-                      .margin({ right: 4 })
+              Row({ space: 4 }) { // 内部再稍微紧凑一些
+                // 中间标题：“在线：” 更短更窄
+                Text('在线：')
+                  .fontSize(10)
+                  .fontColor('#6B7280')
 
-                    Text(u.isSelf ? '我 (' + u.clientId + ')' : u.clientId)
-                      .fontSize(11)
-                      .fontColor('#111827')
-                  }
-                  .padding({
-                    left: 8,
-                    right: 8,
-                    top: 3,
-                    bottom: 3
-                  })
-                  .backgroundColor(u.isSelf ? '#DBEAFE' : '#E5E7EB')
-                  .borderRadius(999)
-                }, (u: OnlineUserInfo) => u.clientId)
+                // 在线用户标签（紧挨着“在线：”）
+                Row({ space: 4 }) {
+                  ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
+                    Row() {
+                      // 彩色小方块
+                      Rect()
+                        .width(8)    // 原来 10
+                        .height(8)
+                        .radius(2)
+                        .fill(u.displayColor)
+                        .margin({ right: 4 })
+
+                      Text(u.isSelf ? '我(' + u.clientId + ')' : u.clientId)
+                        .fontSize(10)          // 更小一点
+                        .fontColor('#111827')
+                    }
+                    .padding({
+                      left: 6, // 原来 8
+                      right: 6,
+                      top: 2, // 原来 3
+                      bottom: 2
+                    })
+                    .backgroundColor(u.isSelf ? '#DBEAFE' : '#E5E7EB')
+                    .borderRadius(999)
+                  }, (u: OnlineUserInfo) => u.clientId)
+                }
               }
-              .height(28)
-              .padding({ right: 4 }) // 末尾留一点空
+              .height(26) // 控制整个在线用户区的高度更紧凑
             }
-            .scrollable(ScrollDirection.Horizontal) // ✅ ArkTS 6.0 正确写法：设为横向滚动
-            .layoutWeight(1) // ✅ 占据剩余空间，避免把按钮挤出屏幕
+            .scrollable(ScrollDirection.Horizontal) // ✅ 水平滚动
+            .layoutWeight(1) // 占据剩余空间，自适应压缩，不撑开左侧按钮
           }
-          .width('100%')
-          .justifyContent(FlexAlign.Start)
-          .alignItems(VerticalAlign.Center)
+          .justifyContent(FlexAlign.Start) // 整行靠左排
+          .alignItems(VerticalAlign.Center) // 垂直居中
           .padding({
             left: 12,
             right: 12,
-            top: 6,
-            bottom: 6
+            top: 4, // 原来 6，稍微减一点
+            bottom: 4
           })
           .backgroundColor('#F9FAFB')
 
-
+          // ===== 操作记录区域，保持你原来的逻辑不变 =====
           if (this.showOpLog) {
             Column() {
               Scroll() {
@@ -1272,9 +1275,13 @@ struct Index {
       this.drawPixelMap = await this.createEmptyDrawLayerLike(pm)
       this.drawPixelVersion++
       // =========================================================
+      const selfId: string = this.localClientId || this.clientId
+      this.appendOpLog(selfId, '打开了一张图片', this.localColor)
+
       if (this.collabClient.connected && this.pixelMap) {
-        await this.broadcastImageToPeers(this.pixelMap as image.PixelMap);
+        await this.broadcastImageToPeers(this.pixelMap as image.PixelMap, '打开了一张图片')
       }
+
       promptAction.showToast({ message: '图片已加载 ' })
     } catch (err) {
       let code = 'NA'
@@ -1537,14 +1544,7 @@ struct Index {
       this.accumulatedRotate = (this.accumulatedRotate + 90) % 360
 
       this.pixelVersion++
-      this.lastOpDesc = '右旋转 90°';
-      await this.syncCanvasToOthers();
-
-
-      // ⑤ 本机写操作记录
-      const selfId: string = this.localClientId || this.clientId
-      this.appendOpLog(selfId, '右旋转 90°', this.localColor)
-
+      await this.logAndSyncAfterImageChange('左旋转 90°')
     } catch (err) {
       const e = err as Error
       console.error(`rotateRight90 failed: ${e.message}`)
@@ -1581,14 +1581,7 @@ struct Index {
       this.accumulatedRotate = (this.accumulatedRotate + 270) % 360
 
       this.pixelVersion++
-      // ④ 协作：把旋转后的画面同步给其他客户端
-      this.lastOpDesc = '右旋转 90°';
-      await this.syncCanvasToOthers();
-
-
-      // ⑤ 本机写操作记录
-      const selfId: string = this.localClientId || this.clientId
-      this.appendOpLog(selfId, '右旋转 90°', this.localColor)
+      await this.logAndSyncAfterImageChange('左旋转 90°')
     } catch (err) {
       const e = err as Error
       console.error(`rotateLeft90 failed: ${e.message}`)
@@ -1598,6 +1591,7 @@ struct Index {
     }
   }
 
+  // 亮度调整
   // 亮度调整
   private async adjustBrightness(delta: number) {
     if (!this.pixelMap) {
@@ -1620,6 +1614,18 @@ struct Index {
     if (this.brightnessLevel < MIN_LEVEL) {
       this.brightnessLevel = MIN_LEVEL
     }
+
+    // === 新增：构造描述 + 记录操作 + 协作同步 ===
+    let desc: string
+    if (delta > 0) {
+      desc = '提高了亮度'
+    } else if (delta < 0) {
+      desc = '降低了亮度'
+    } else {
+      desc = '调整了亮度'
+    }
+
+    await this.logAndSyncAfterImageChange(desc)
   }
 
   // 构建亮度 + 对比度矩阵
@@ -1755,6 +1761,17 @@ struct Index {
     if (this.contrastLevel < MIN_CONTRAST) {
       this.contrastLevel = MIN_CONTRAST
     }
+
+    let desc: string
+    if (delta > 0) {
+      desc = '提高了对比度'
+    } else if (delta < 0) {
+      desc = '降低了对比度'
+    } else {
+      desc = '调整了对比度'
+    }
+
+    await this.logAndSyncAfterImageChange(desc)
   }
 
   private onClickTopMenu(menu: TopMenu) {
@@ -3343,8 +3360,10 @@ struct Index {
       return;
     }
 
-    // 用现有的广播函数，把当前底图发出去
-    await this.broadcastImageToPeers(this.pixelMap as image.PixelMap);
+    // ✅ 用 lastOpDesc 作为这次同步的“描述”
+    const desc: string = this.lastOpDesc || '';
+
+    await this.broadcastImageToPeers(this.pixelMap as image.PixelMap, desc);
   }
 
   // ===== 操作记录：追加一条日志 =====
@@ -3382,34 +3401,90 @@ struct Index {
   }
 
   // 把当前 PixelMap 打包成 PNG + base64，通过 WebSocket 发给所有人
-  private async broadcastImageToPeers(pm: image.PixelMap): Promise<void> {
-    // 1) pack 成 PNG 的 ArrayBuffer
-    const packer = image.createImagePacker()
-    const packOpts: image.PackingOption = {
-      format: 'image/png',
-      quality: 100
-    }
-    const pngBuffer: ArrayBuffer = await packer.packToData(pm, packOpts)
-    packer.release?.()
+  // 把当前 PixelMap 打包成 PNG + base64，通过 WebSocket 发给所有人
+  // 把当前画面（底图 + 绘制层 + 亮度/对比度）打包成 PNG + base64，通过 WebSocket 发给所有人
+  private async broadcastImageToPeers(pm: image.PixelMap, opDesc: string): Promise<void> {
+    // 1) 克隆一份用于发送的临时代码（不要直接改 this.pixelMap）
+    const sendPm: image.PixelMap = await this.clonePixelMap(pm)
 
-    // 2) ArrayBuffer -> base64（这里写成辅助函数，你可以按 HarmonyOS 6.0 可用的 Base64 API 实现）
-    const pngBase64: string = this.arrayBufferToBase64(pngBuffer)
+    try {
+      // 2) 如果有绘制层，把绘制层 merge 到 sendPm 上（让远端也看到画的线条/矩形等）
+      if (this.drawPixelMap) {
+        await this.mergeDrawLayerIntoBase(sendPm, this.drawPixelMap as image.PixelMap)
+      }
 
-    const senderId: string = this.localClientId || this.clientId;
+      // 3) 把当前亮度 / 对比度烘焙到 sendPm（只影响 sendPm，本地 state 不变）
+      await this.bakeToneForSave(sendPm)
 
-    const msg: CollabMessage = {
-      type: 'imageSync',
-      clientId: senderId,
-      payload: {
+      // 4) pack 成 PNG 的 ArrayBuffer
+      const packer = image.createImagePacker()
+      const packOpts: image.PackingOption = {
         format: 'image/png',
-        dataBase64: pngBase64,
-        opDesc: this.lastOpDesc  // 👈 新增
-      } as CollabImageSyncPayload
-    };
+        quality: 100
+      }
+      const pngBuffer: ArrayBuffer = await packer.packToData(sendPm, packOpts)
+      packer.release?.()
 
+      // 5) ArrayBuffer -> base64
+      const pngBase64: string = this.arrayBufferToBase64(pngBuffer)
 
-    this.collabClient.send(msg)
-    console.info('[Collab] broadcast image-sync, size(base64)=', pngBase64.length)
+      const senderId: string = this.localClientId || this.clientId
+      const msg: CollabMessage = {
+        type: 'imageSync',
+        clientId: senderId,
+        payload: {
+          format: 'image/png',
+          dataBase64: pngBase64,
+          opDesc: opDesc, // 👈 使用参数里的描述
+        } as CollabImageSyncPayload
+      }
+
+      this.collabClient.send(msg)
+      console.info('[Collab] broadcast image-sync, size(base64)=', pngBase64.length)
+    } finally {
+      // 6) 释放临时 PixelMap
+      sendPm.release?.()
+    }
+  }
+
+  // 统一封装：图像修改后，记录一条操作 + 同步到其他端
+  // 统一封装：图像修改后，记录一条操作 + 同步到其他端
+  private async logAndSyncAfterImageChange(opDesc: string): Promise<void> {
+    const selfId: string = this.localClientId || this.clientId
+    // 1) 本机操作日志
+    this.appendOpLog(selfId, opDesc, this.localColor)
+
+    // 2) 协作描述，给对端显示同样的文字
+    this.lastOpDesc = opDesc
+
+    // 3) 如果没在协作 / 没连上 / 没有图，就只记日志，不发图
+    if (!this.collabEnabled ||
+      !this.collabClient ||
+      !this.collabClient.connected ||
+      !this.pixelMap) {
+      return
+    }
+
+    // 4) 准备要发送的 PixelMap：
+    //    - 默认是当前 this.pixelMap
+    //    - 如果有亮度/对比度参数，就 clone 一张临时图，先把亮度/对比度烘焙进去再发
+    let pmForSend: image.PixelMap = this.pixelMap as image.PixelMap
+
+    if (this.brightnessLevel !== 0 || this.contrastLevel !== 0) {
+      // clone 一份临时图
+      const cloned: image.PixelMap = await this.clonePixelMap(pmForSend)
+      // 把当前 brightnessLevel / contrastLevel 烘焙进去（不会修改 this.brightnessLevel / this.contrastLevel）
+      await this.bakeToneForSave(cloned)
+      pmForSend = cloned
+    }
+
+    // 5) 真正通过 WebSocket 广播
+    await this.broadcastImageToPeers(pmForSend, opDesc)
+
+    // 6) 如果用的是临时 clone，用完释放掉
+    if (pmForSend !== this.pixelMap) {
+      pmForSend.release?.()
+    }
   }
 
   // 把 ArrayBuffer 转成 base64 字符串
