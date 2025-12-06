@@ -173,6 +173,7 @@ struct Index {
   @State showOpLog: boolean = false; // 是否展开操作记录面板
   @State opLogList: Array<OperationLogItem> = []; // 操作记录队列
   private opSeq: number = 0; // 本地自增 id
+  private lastOpDesc: string = ''; //上一个协作操作
 
   // ====== 新增：生命周期里初始化 / 关闭 WebSocket ======
   // ====== 生命周期：页面出现时初始化 WebSocket ======
@@ -265,7 +266,8 @@ struct Index {
           const selfId: string = this.localClientId || this.clientId;
           if (msg.clientId && msg.clientId !== selfId) {
             const color: string = this.pickColorForClient(msg.clientId);
-            this.appendOpLog(msg.clientId, '更新了画布', color);
+            const desc = payload.opDesc ?? '更新了画布';
+            this.appendOpLog(msg.clientId, desc, color);
           }
 
           this.applyRemoteImage(payload).then(() => {
@@ -1005,7 +1007,7 @@ struct Index {
                   );
                   this.collabClient.send(msg);
                 } else {
-                  console.error('[Collab] not connected, skip send clear');
+                  console.error('[Collab] not connected, skip sRend clear');
                 }
               })
           }
@@ -1350,8 +1352,6 @@ struct Index {
     }
   }
 
-  // 裁剪当前图片（支持缩放 + 平移 + 叠加绘制层）
-  // 裁剪当前图片，并让笔刷粗细按裁剪比例自动变细
   // 裁剪：根据当前裁剪框，把底图和绘制层一起裁剪，并“温和”调整画笔粗细
   private async doCrop(): Promise<void> {
     if (!this.pixelMap) {
@@ -1530,8 +1530,9 @@ struct Index {
       this.accumulatedRotate = (this.accumulatedRotate + 90) % 360
 
       this.pixelVersion++
-      // ④ 协作：把旋转后的画面同步给其他客户端
-      await this.syncCanvasToOthers()
+      this.lastOpDesc = '右旋转 90°';
+      await this.syncCanvasToOthers();
+
 
       // ⑤ 本机写操作记录
       const selfId: string = this.localClientId || this.clientId
@@ -1574,7 +1575,9 @@ struct Index {
 
       this.pixelVersion++
       // ④ 协作：把旋转后的画面同步给其他客户端
-      await this.syncCanvasToOthers()
+      this.lastOpDesc = '右旋转 90°';
+      await this.syncCanvasToOthers();
+
 
       // ⑤ 本机写操作记录
       const selfId: string = this.localClientId || this.clientId
@@ -3392,9 +3395,11 @@ struct Index {
       clientId: senderId,
       payload: {
         format: 'image/png',
-        dataBase64: pngBase64
+        dataBase64: pngBase64,
+        opDesc: this.lastOpDesc  // 👈 新增
       } as CollabImageSyncPayload
     };
+
 
     this.collabClient.send(msg)
     console.info('[Collab] broadcast image-sync, size(base64)=', pngBase64.length)

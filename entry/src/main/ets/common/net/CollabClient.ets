@@ -6,12 +6,14 @@ import { BusinessError } from '@kit.BasicServicesKit';
 export interface CollabImageSyncPayload {
   format: string; // 'image/png'
   dataBase64: string; // 整张图片的 PNG 的 base64
+  opDesc?: string;
 }
 
 
 // ==== 新增：服务器给客户端分配身份的 payload ====
 export interface CollabAssignIdPayload {
   displayColor: string; // 例如 '#EF4444'
+  opDesc?: string;
 }
 
 export interface OnlineUserItem {
@@ -63,7 +65,9 @@ export interface CollabStrokePayload {
 // 清空图层消息的 payload
 export interface CollabClearPayload {
   layerId: string;
+  opDesc?: string; // 🔵 新增，可选说明文字
 }
+
 
 // 所有 payload 的联合类型
 export type CollabPayload =
@@ -77,19 +81,25 @@ export type CollabPayload =
 // ==== 工具函数：构造 “清空图层” 消息 ====
 
 // 注意：这里用显式的 interface 类型，ArkTS 认可，不会报 untyped object literal
-export function buildClearMessage(clientId: string, layerId: string): CollabMessage {
+export function buildClearMessage(
+  clientId: string,
+  layerId: string,
+  opDesc?: string
+): CollabMessage {
   const payload: CollabClearPayload = {
-    layerId: layerId
+    layerId: layerId,
+    opDesc: opDesc
   };
 
-  const msg: CollabMessage = {
-    type: 'clear',
-    clientId: clientId,
-    payload: payload
-  };
+  // 🚨 不能写成字面量，要用“创建空对象 + 赋值”的方式
+  const msg = {} as CollabMessage;
+  msg.type = 'clear';
+  msg.clientId = clientId;
+  msg.payload = payload;
 
   return msg;
 }
+
 
 // ========== 回调类型定义 ==========
 
