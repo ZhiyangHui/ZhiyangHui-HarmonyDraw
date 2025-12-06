@@ -596,7 +596,8 @@ struct Index {
 
           // ===== 顶部：在线协作条 =====
           // 顶部协作栏
-          Row({ space: 8 }) { // 用 space 控制组件之间的固定间距
+          // ===== 顶部协作 / 在线用户工具栏 =====
+          Row({ space: 8 }) {
             // 左侧：协作按钮
             Button(this.collabEnabled ? '断开协作' : '加入协作', { type: ButtonType.Capsule })
               .height(28)
@@ -625,41 +626,46 @@ struct Index {
                 this.showOpLog = !this.showOpLog
               })
 
-
-            // 中间标题
+            // 中间标题（固定，不滚动）
             Text('在线用户：')
               .fontSize(12)
               .fontColor('#6B7280')
 
-            // 右侧：在线用户标签（紧挨着“在线用户：”）
-            Row({ space: 6 }) {
-              ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
-                Row() {
-                  // 彩色小方块
-                  Rect()
-                    .width(10)
-                    .height(10)
-                    .radius(2)
-                    .fill(u.displayColor)
-                    .margin({ right: 4 })
+            // 右侧：在线用户标签 ———> 外面套一层横向 Scroll
+            Scroll() {
+              Row({ space: 6 }) {
+                ForEach(this.onlineUsers, (u: OnlineUserInfo) => {
+                  Row() {
+                    Rect()
+                      .width(10)
+                      .height(10)
+                      .radius(2)
+                      .fill(u.displayColor)
+                      .margin({ right: 4 })
 
-                  Text(u.isSelf ? '我 (' + u.clientId + ')' : u.clientId)
-                    .fontSize(11)
-                    .fontColor('#111827')
-                }
-                .padding({
-                  left: 8,
-                  right: 8,
-                  top: 3,
-                  bottom: 3
-                })
-                .backgroundColor(u.isSelf ? '#DBEAFE' : '#E5E7EB')
-                .borderRadius(999)
-              }, (u: OnlineUserInfo) => u.clientId)
+                    Text(u.isSelf ? '我 (' + u.clientId + ')' : u.clientId)
+                      .fontSize(11)
+                      .fontColor('#111827')
+                  }
+                  .padding({
+                    left: 8,
+                    right: 8,
+                    top: 3,
+                    bottom: 3
+                  })
+                  .backgroundColor(u.isSelf ? '#DBEAFE' : '#E5E7EB')
+                  .borderRadius(999)
+                }, (u: OnlineUserInfo) => u.clientId)
+              }
+              .height(28)
+              .padding({ right: 4 }) // 末尾留一点空
             }
+            .scrollable(ScrollDirection.Horizontal) // ✅ ArkTS 6.0 正确写法：设为横向滚动
+            .layoutWeight(1) // ✅ 占据剩余空间，避免把按钮挤出屏幕
           }
-          .justifyContent(FlexAlign.Start) // 整行靠左排
-          .alignItems(VerticalAlign.Center) // 垂直居中
+          .width('100%')
+          .justifyContent(FlexAlign.Start)
+          .alignItems(VerticalAlign.Center)
           .padding({
             left: 12,
             right: 12,
@@ -667,6 +673,7 @@ struct Index {
             bottom: 6
           })
           .backgroundColor('#F9FAFB')
+
 
           if (this.showOpLog) {
             Column() {
