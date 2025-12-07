@@ -252,10 +252,11 @@ struct Index {
           // 只记录别的用户的清空操作
           const selfId: string = this.localClientId || this.clientId;
           if (msg.clientId && msg.clientId !== selfId) {
-            const color: string = this.pickColorForClient(msg.clientId);
-            this.appendOpLog(msg.clientId, '清空画布', color);
+            // 不再自己算颜色，appendOpLog 会自己从 onlineUsers 里找
+            this.appendOpLog(msg.clientId, '清空画布');
           }
         }
+
 
         // ========== ④ imageSync 图片同步 ==========
         if (msg.type === 'imageSync') {
@@ -265,9 +266,9 @@ struct Index {
           // 记录远端更新画布（同样跳过自己发的 echo）
           const selfId: string = this.localClientId || this.clientId;
           if (msg.clientId && msg.clientId !== selfId) {
-            const color: string = this.pickColorForClient(msg.clientId);
-            const desc = payload.opDesc ?? '更新了画布';
-            this.appendOpLog(msg.clientId, desc, color);
+            const desc: string = payload.opDesc ?? '更新了画布';
+            // 不传 color，让 appendOpLog 自己从 onlineUsers 取颜色
+            this.appendOpLog(msg.clientId, desc);
           }
 
           this.applyRemoteImage(payload).then(() => {
@@ -275,6 +276,7 @@ struct Index {
             promptAction.showToast({ message: '已加载协作图片' });
           });
         }
+
 
         // 更多消息类型在这里扩展...
       },
@@ -3367,8 +3369,24 @@ struct Index {
   }
 
   // ===== 操作记录：追加一条日志 =====
+  // ===== 操作记录：追加一条日志 =====
   private appendOpLog(userId: string, message: string, colorOpt?: string): void {
-    const color: string = colorOpt ?? this.pickColorForClient(userId);
+    // 1) 优先使用外部传进来的颜色（比如本机操作用 this.localColor）
+    let color: string | undefined = colorOpt;
+
+    // 2) 如果没传颜色，尝试从在线用户列表里找这个人的 displayColor
+    if (!color) {
+      const u: OnlineUserInfo | undefined = this.onlineUsers
+        .find((item: OnlineUserInfo) => item.clientId === userId);
+      if (u) {
+        color = u.displayColor;
+      }
+    }
+
+    // 3) 还找不到，就兜底用本地的 pickColorForClient 保证不会是空
+    if (!color) {
+      color = this.pickColorForClient(userId);
+    }
 
     // 简单时间戳
     const now: Date = new Date();
