@@ -1877,7 +1877,7 @@ struct Index {
       return
     }
 
-    // ✅ 改：画之前压一份整图快照
+    // ✅ 画之前压一份整图快照（这里按你现有逻辑来）
     await this.pushFullSnapshotBeforeChange();
 
     // 1. 画布尺寸防御
@@ -1886,11 +1886,24 @@ struct Index {
       return
     }
 
-    // 2. 必须已经有绘制图层（在 pickImage 里创建）
-    if (!this.drawPixelMap) {
-      promptAction.showToast({ message: '绘制图层不存在，请重新打开图片' })
+    // ===== ⭐⭐ 选目标图层：优先 drawPixelMap，没有就用 pixelMap =====
+    let targetPm: image.PixelMap | undefined = this.drawPixelMap as image.PixelMap | undefined
+    let targetIsDrawLayer: boolean = true
+
+    if (!targetPm) {
+      targetPm = this.pixelMap as image.PixelMap
+      targetIsDrawLayer = false
+    }
+
+    if (!targetPm) {
+      console.warn('>>> drawPointAtUi: both drawPixelMap & pixelMap are null')
+      promptAction.showToast({ message: '当前没有可编辑图层，请重新打开图片' })
       return
     }
+
+    console.info(`>>> drawPointAtUi: target layer = ${targetIsDrawLayer ? 'drawPixelMap' : 'pixelMap'}`)
+
+    // ===== 下面这部分，原来用 basePm / layerPm 的地方，统一换成 targetPm =====
 
     const basePm = this.pixelMap as image.PixelMap
     const baseInfo: image.ImageInfo = await basePm.getImageInfo()
@@ -1928,20 +1941,19 @@ struct Index {
       return
     }
 
-    // ===== 2) 在「绘制图层」上改像素 =====
-    const layerPm: image.PixelMap = this.drawPixelMap as image.PixelMap
-    const info: image.ImageInfo = await layerPm.getImageInfo()
+    // ===== 2) 在「目标图层」上改像素 =====
+    const info: image.ImageInfo = await targetPm.getImageInfo()
     const width: number = info.size.width
     const height: number = info.size.height
 
     if (px < 0 || py < 0 || px >= width || py >= height) {
-      console.info('>>> drawPointAtUi: pixel out of layer range')
+      console.info('>>> drawPointAtUi: pixel out of target layer range')
       return
     }
 
-    const byteLength: number = layerPm.getPixelBytesNumber()
+    const byteLength: number = targetPm.getPixelBytesNumber()
     const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
-    await layerPm.readPixelsToBuffer(buffer)
+    await targetPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
     // 通道顺序
@@ -1972,7 +1984,6 @@ struct Index {
         break
     }
 
-    // imgW / imgH 前面已经算过
     const radius: number = this.computeStrokeRadiusPixel(imgW, imgH)
     const alpha: number = this.getStrokeAlpha()
 
@@ -1998,7 +2009,7 @@ struct Index {
         const aIndex: number = baseIndex + aOffset
 
         if (this.currentBrush === BrushTool.Eraser) {
-          // 橡皮擦：只擦掉绘制层的 alpha
+          // ⭐ 橡皮擦：只擦掉目标图层的 alpha
           data[aIndex] = 0
         } else {
           data[rIndex] = this.strokeR
@@ -2010,23 +2021,30 @@ struct Index {
     }
 
     // ===== 3) 写回 + 换一个新的 PixelMap 引用，强制 UI 刷新 =====
-    await layerPm.writeBufferToPixels(buffer)
+    await targetPm.writeBufferToPixels(buffer)
 
-    // 和你对主图的做法保持一致：clone 一份新的，赋给 @State
-    const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
-    // 旧的图层可以释放（可选）
-    if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
-      this.drawPixelMap.release?.()
+    if (targetIsDrawLayer) {
+      const newLayer: image.PixelMap = await this.clonePixelMap(targetPm)
+      if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
+        this.drawPixelMap.release?.()
+      }
+      this.drawPixelMap = newLayer
+      this.drawPixelVersion++
+    } else {
+      const newBase: image.PixelMap = await this.clonePixelMap(targetPm)
+      if (this.pixelMap && this.pixelMap !== newBase) {
+        (this.pixelMap as image.PixelMap).release?.()
+      }
+      this.pixelMap = newBase
+      this.pixelVersion++
     }
-    this.drawPixelMap = newLayer
 
     const desc: string = `画了一个点 像素=(${Math.floor(uiX)}, ${Math.floor(uiY)})`
     await this.logAndSyncAfterImageChange(desc)
 
-    console.info(`>>> draw layer created: size=${(await this.drawPixelMap!.getImageInfo()).size.width}x${(await this.drawPixelMap!.getImageInfo()).size.height}`)
-
-
-    this.drawPixelVersion++ // id(`draw-${drawPixelVersion}`) 也一起变
+    console.info(
+      `>>> drawPointAtUi done: target=${targetIsDrawLayer ? 'draw' : 'base'}, size=${width}x${height}`
+    )
   }
 
   // 直线工具：拖拽产生的起点/终点（UI 坐标），在这里转换成像素并画线
@@ -3599,7 +3617,7 @@ struct Index {
       (this.pixelMap as image.PixelMap).release?.();
     }
 
-    // 4. 替换为远端底图
+    // 4. 替换为远端底图（协作 flatten 之后的“总画面”）
     this.pixelMap = remotePm;
 
     // 5. 更新 originalPixelMap（方便 resetView 回到“协作后的初始状态”）
@@ -3608,17 +3626,16 @@ struct Index {
     }
     this.originalPixelMap = await this.clonePixelMap(remotePm);
 
-    // 6. 远端过来的画面里已经包含了对方的绘制结果，
-    //    本机自己的绘制图层就当作“从零开始”，重新建一层透明 overlay。
+    // 6. ⭐ 关键修改：协作图像之后，直接在 pixelMap 上作画，
+    //    所以这里把 drawPixelMap 清掉，不再新建透明 overlay
     if (this.drawPixelMap) {
       this.drawPixelMap.release?.();
       this.drawPixelMap = undefined;
     }
-    const drawLayer: image.PixelMap = await this.createEmptyDrawLayerLike(remotePm);
-    this.drawPixelMap = drawLayer;
     this.drawPixelVersion++;
+    console.info('[Collab] applyRemoteImage: set pixelMap from remote, clear drawPixelMap, will draw directly on pixelMap.');
 
-    // 7. 视图参数不用乱动（或者你愿意的话可以清零）
+    // 7. 视图参数可以按你原来逻辑处理
     this.zoom = 1.0;
     this.offsetX = 0;
     this.offsetY = 0;
