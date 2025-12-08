@@ -2014,6 +2014,9 @@ struct Index {
     }
     this.drawPixelMap = newLayer
 
+    const desc: string = `画了一个点 像素=(${Math.floor(uiX)}, ${Math.floor(uiY)})`
+    await this.logAndSyncAfterImageChange(desc)
+
     console.info(`>>> draw layer created: size=${(await this.drawPixelMap!.getImageInfo()).size.width}x${(await this.drawPixelMap!.getImageInfo()).size.height}`)
 
 
@@ -2066,6 +2069,17 @@ struct Index {
 
     // 交给专门函数在“绘制图层”上画线
     await this.drawLineBetweenPixels(x0, y0, x1, y1)
+
+    // ⭐⭐ 同步协作
+    // ⭐ 操作记录：只记录 左上角 -> 右下角（像素坐标）
+    const left: number = Math.min(x0, x1)
+    const top: number = Math.min(y0, y1)
+    const right: number = Math.max(x0, x1)
+    const bottom: number = Math.max(y0, y1)
+
+    const desc: string = `画了一条直线 (${left}, ${top}) -> (${right}, ${bottom})`
+
+    await this.logAndSyncAfterImageChange(desc)
 
     promptAction.showToast({ message: '直线已绘制' })
   }
@@ -2272,6 +2286,19 @@ struct Index {
 
     // 2）在绘制层上画矩形
     await this.drawRectBetweenPixels(x0, y0, x1, y1)
+
+    // 3）写操作记录（带像素坐标）
+    // 归一化成左上 / 右下
+    const left: number = Math.min(x0, x1)
+    const right: number = Math.max(x0, x1)
+    const top: number = Math.min(y0, y1)
+    const bottom: number = Math.max(y0, y1)
+
+    const desc: string =
+      `画了一个矩形 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})`
+
+    await this.logAndSyncAfterImageChange(desc)
+
 
     promptAction.showToast({ message: '矩形已绘制' })
   }
@@ -2623,6 +2650,13 @@ struct Index {
     // 3）真正画圆（在绘制图层上）
     await this.drawCircleBetweenPixels(left, top, right, bottom)
 
+
+    // 4）写操作记录
+    const desc: string =
+      `画了一个圆 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})`
+
+    await this.logAndSyncAfterImageChange(desc)
+
     promptAction.showToast({ message: '圆形已绘制' })
   }
 
@@ -2678,6 +2712,12 @@ struct Index {
 
     // 2）真正在绘制图层里画椭圆
     await this.drawEllipseBetweenPixels(left, top, right, bottom)
+
+    // 3）写操作记录
+    const desc: string =
+      `画了一个椭圆 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})`
+
+    await this.logAndSyncAfterImageChange(desc)
 
     promptAction.showToast({ message: '椭圆已绘制' })
   }
@@ -3060,6 +3100,10 @@ struct Index {
     // 3) 清空缓存
     this.freeDrawBuffer = null
     this.freeDrawArrayBuffer = null
+
+    // ⭐ 新增 ②：写一条操作记录 + 做协作同步
+    const desc: string = '自由画笔：完成了一笔自由绘制'
+    await this.logAndSyncAfterImageChange(desc)
   }
 
   // 根据当前画笔透明度 strokeOpacity（0.0~1.0）计算对应的 alpha（0~255）
