@@ -1800,6 +1800,8 @@ struct Index {
   }
 
   private async undo() {
+    console.info(`>>> UNDO CALLED, historyLen=${this.history.length}, historyIndex=${this.historyIndex}`)
+
     if (this.historyIndex < 0 || this.history.length === 0) {
       promptAction.showToast({ message: '没有可以撤销的操作' })
       return
@@ -1863,6 +1865,9 @@ struct Index {
     this.contrastLevel = snapshot.contrastLevel
     this.accumulatedRotate = snapshot.accumulatedRotate
 
+    const desc: string = '撤销了一步操作'
+    await this.logAndSyncAfterImageChange(desc)
+
     this.pixelVersion++
   }
 
@@ -1872,7 +1877,8 @@ struct Index {
       return
     }
 
-    await this.pushHistorySnapshot(false)
+    // ✅ 改：画之前压一份整图快照
+    await this.pushFullSnapshotBeforeChange();
 
     // 1. 画布尺寸防御
     if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
@@ -2091,7 +2097,7 @@ struct Index {
     }
 
     // ⭐ 和画点一样，先记录一次历史快照（只记录状态 + 绘制层）
-    await this.pushHistorySnapshot(false)
+    await this.pushFullSnapshotBeforeChange();
 
     // 1. 用底图做一次尺寸边界检查（正常和绘制层一致）
     const basePm: image.PixelMap = this.pixelMap as image.PixelMap
@@ -2282,7 +2288,7 @@ struct Index {
 
     // 1）修改前先把当前整图压入撤销栈（可撤回）
     // 1）修改前：只记录状态 + 绘制层快照（底图不动）
-    await this.pushHistorySnapshot(false)
+    await this.pushFullSnapshotBeforeChange();
 
     // 2）在绘制层上画矩形
     await this.drawRectBetweenPixels(x0, y0, x1, y1)
@@ -2645,7 +2651,7 @@ struct Index {
     bottom = top + side
 
     // 2）修改前压入撤销栈：只记录状态 + 绘制层快照（底图不动）
-    await this.pushHistorySnapshot(false)
+    await this.pushFullSnapshotBeforeChange();
 
     // 3）真正画圆（在绘制图层上）
     await this.drawCircleBetweenPixels(left, top, right, bottom)
@@ -2708,7 +2714,7 @@ struct Index {
     }
 
     // 1）修改前压入撤销栈：只记录状态 + 绘制层快照（底图不动）
-    await this.pushHistorySnapshot(false)
+    await this.pushFullSnapshotBeforeChange();
 
     // 2）真正在绘制图层里画椭圆
     await this.drawEllipseBetweenPixels(left, top, right, bottom)
@@ -3571,49 +3577,68 @@ struct Index {
   }
 
   // 把远端发来的 base64 PNG 转成 PixelMap 并应用到本地
+  // ⭐ 建议：直接用这个版本覆盖你现有的 applyRemoteImage
   private async applyRemoteImage(payload: CollabImageSyncPayload): Promise<void> {
-    // 1) base64 -> ArrayBuffer
-    const buf: ArrayBuffer = this.base64ToArrayBuffer(payload.dataBase64)
+    // 1. 先把 payload.dataBase64 解成 PixelMap（你原来的逻辑）
+    const buf: ArrayBuffer = this.base64ToArrayBuffer(payload.dataBase64);
+    const imgSource: image.ImageSource = image.createImageSource(buf);
+    const remotePm: image.PixelMap = await imgSource.createPixelMap({
+      editable: true
+    });
+    imgSource.release?.();
 
-    // 2) decode 成 PixelMap
-    const imgSource = image.createImageSource(buf)
-    const pm: image.PixelMap = await imgSource.createPixelMap({ editable: true })
-    imgSource.release?.()
-
-    // 3) 和 pickImage 里一样的初始化逻辑
-    //    （注意：这里不能用 photoAccessHelper，那只在本地选图时用）
-    if (this.originalPixelMap) {
-      this.originalPixelMap.release?.()
-    }
-    this.originalPixelMap = await this.clonePixelMap(pm)
-
+    // 2. 在“接收远端画面”之前，把当前整张图压一份快照到 history 里
     if (this.pixelMap) {
-      this.pixelMap.release?.()
+      const currentPm: image.PixelMap = this.pixelMap as image.PixelMap;
+      const backupPm: image.PixelMap = await this.clonePixelMap(currentPm);
+      await this.pushHistorySnapshot(true, backupPm);
     }
-    this.pixelMap = pm
 
-    this.zoom = 1.0
-    this.offsetX = 0
-    this.offsetY = 0
-    this.brightnessLevel = 0.0
-    this.contrastLevel = 0.0
-    this.accumulatedRotate = 0
-    this.pixelVersion++
+    // 3. 释放当前底图
+    if (this.pixelMap) {
+      (this.pixelMap as image.PixelMap).release?.();
+    }
 
-    const info: image.ImageInfo = await pm.getImageInfo()
-    const w = info.size.width
-    const h = info.size.height
-    this.imageDiag = Math.hypot(w, h)
+    // 4. 替换为远端底图
+    this.pixelMap = remotePm;
 
-    // 重建绘制层
+    // 5. 更新 originalPixelMap（方便 resetView 回到“协作后的初始状态”）
+    if (this.originalPixelMap) {
+      this.originalPixelMap.release?.();
+    }
+    this.originalPixelMap = await this.clonePixelMap(remotePm);
+
+    // 6. 远端过来的画面里已经包含了对方的绘制结果，
+    //    本机自己的绘制图层就当作“从零开始”，重新建一层透明 overlay。
     if (this.drawPixelMap) {
-      this.drawPixelMap.release?.()
+      this.drawPixelMap.release?.();
+      this.drawPixelMap = undefined;
     }
-    this.drawPixelMap = await this.createEmptyDrawLayerLike(pm)
-    this.drawPixelVersion++
+    const drawLayer: image.PixelMap = await this.createEmptyDrawLayerLike(remotePm);
+    this.drawPixelMap = drawLayer;
+    this.drawPixelVersion++;
 
-    // 清空历史栈，视为“新打开一张图”
-    this.history = []
-    this.historyIndex = -1
+    // 7. 视图参数不用乱动（或者你愿意的话可以清零）
+    this.zoom = 1.0;
+    this.offsetX = 0;
+    this.offsetY = 0;
+    this.brightnessLevel = 0.0;
+    this.contrastLevel = 0.0;
+    this.accumulatedRotate = 0;
+
+    this.pixelVersion++;
+  }
+
+  // ⭐ 新增：在任何会改画面的操作之前，保存“整张图”的快照
+  private async pushFullSnapshotBeforeChange(): Promise<void> {
+    if (!this.pixelMap) {
+      return;
+    }
+    const currentPm: image.PixelMap = this.pixelMap as image.PixelMap;
+    // 一定要 clone，一定不能直接把 this.pixelMap 传进去
+    const backupPm: image.PixelMap = await this.clonePixelMap(currentPm);
+
+    // includePixel = true，pmForSnapshot 用我们 clone 出来的 backupPm
+    await this.pushHistorySnapshot(true, backupPm);
   }
 }
