@@ -4,7 +4,11 @@ import { image } from '@kit.ImageKit'
 import { fileIo } from '@kit.CoreFileKit'
 import { common } from '@kit.AbilityKit'
 import { BusinessError } from '@kit.BasicServicesKit'
+import resourceManager from '@ohos.resourceManager'
+import drawing from '@ohos.graphics.drawing'
+
 import util from '@ohos.util'
+
 // entry/src/main/ets/pages/Index.ets
 import { ColorWheelPicker } from './ColorPicker'
 import {
@@ -295,13 +299,12 @@ struct Index {
 
   build() {
     Column() {
-      // 顶部工具栏
       Column() {
         Column() {
 
           // 顶部工具栏
           Column() {
-            // === 一级菜单：图片操作 / 形状 / 画笔 / 撤销 ===
+            // === 一级菜单：图片操作 / 形状 / 画笔 / 撤销 / 分享 ===
             Row({ space: 8 }) {
               // 一级按钮：图片操作
               Button('图片操作', { type: ButtonType.Capsule })
@@ -333,7 +336,28 @@ struct Index {
                   this.currentMenu = this.currentMenu === 'brush' ? '' : 'brush'
                 })
 
-              // 一级按钮：撤销（这里先占位，后面你接入真正的撤销逻辑）
+              // ✅ 新增：一级按钮：分享
+              // Button('分享', { type: ButtonType.Capsule })
+              //   .height(32)
+              //   .fontSize(12)
+              //   .backgroundColor(this.currentMenu === 'share' ? '#2563EB' : '#EFF6FF')
+              //   .fontColor(this.currentMenu === 'share' ? '#FFFFFF' : '#1D4ED8')
+              //   .onClick(() => {
+              //     this.currentMenu = this.currentMenu === 'share' ? '' : 'share'
+              //   })
+
+              // 一级按钮：加水印
+              Button('加水印', { type: ButtonType.Capsule })
+                .height(32)
+                .fontSize(12)
+                .backgroundColor('#E0F2FE')
+                .fontColor('#0369A1')
+                .onClick(async () => {
+                  await this.addWatermark()
+                })
+
+
+              // 一级按钮：撤销
               Button('撤销', { type: ButtonType.Capsule })
                 .height(32)
                 .fontSize(12)
@@ -594,7 +618,9 @@ struct Index {
               .width('100%')
               .padding({ bottom: 8 })
             }
+
           }
+
 
           // ===== 顶部：在线协作条 =====
           // 顶部：协作 & 在线用户栏
@@ -1040,6 +1066,260 @@ struct Index {
         .padding(12)
       }
     }
+  }
+
+  private async shareToWeChat(): Promise<void> {
+  }
+
+  private async shareToWeibo(): Promise<void> {
+  }
+
+  private async shareByEmail(): Promise<void> {
+  }
+
+  private async loadLogoPixelMap(): Promise<image.PixelMap> {
+    const context = getContext(this) as common.UIAbilityContext;
+    const resMgr = context.resourceManager;
+
+    // 假设资源名就是 logo.png → app.media.logo
+    const logoId: number = $r('app.media.logo').id;
+
+    // 读出二进制数据（Uint8Array）
+    const fileData: Uint8Array = await resMgr.getMediaContent(logoId);
+    const buffer: ArrayBuffer = fileData.buffer as ArrayBuffer;
+
+    const imgSource: image.ImageSource = image.createImageSource(buffer);
+    const logoPm: image.PixelMap = await imgSource.createPixelMap({
+      editable: true
+    });
+    imgSource.release?.();
+
+    return logoPm;
+  }
+
+  // 在绘制层 layerPm 上，把 watermarkPm 按 (offsetX, offsetY) 贴上去
+  private async pasteWatermarkIntoLayer(
+    layerPm: image.PixelMap,
+    watermarkPm: image.PixelMap,
+    offsetX: number,
+    offsetY: number
+  ): Promise<void> {
+    const layerInfo: image.ImageInfo = await layerPm.getImageInfo();
+    const wmInfo: image.ImageInfo = await watermarkPm.getImageInfo();
+
+    const layerW: number = layerInfo.size.width;
+    const layerH: number = layerInfo.size.height;
+    const wmW: number = wmInfo.size.width;
+    const wmH: number = wmInfo.size.height;
+
+    // 尺寸兜底：完全在外面就不用画
+    if (wmW <= 0 || wmH <= 0 || layerW <= 0 || layerH <= 0) {
+      console.info('>>> pasteWatermarkIntoLayer: invalid size, skip');
+      return;
+    }
+
+    // 读取像素数据
+    const layerLen: number = layerPm.getPixelBytesNumber();
+    const wmLen: number = watermarkPm.getPixelBytesNumber();
+
+    const layerBuf: ArrayBuffer = new ArrayBuffer(layerLen);
+    const wmBuf: ArrayBuffer = new ArrayBuffer(wmLen);
+
+    await layerPm.readPixelsToBuffer(layerBuf);
+    await watermarkPm.readPixelsToBuffer(wmBuf);
+
+    const layerData: Uint8Array = new Uint8Array(layerBuf);
+    const wmData: Uint8Array = new Uint8Array(wmBuf);
+
+    // ------- layer 通道偏移 -------
+    let lrOff: number = 0;
+    let lgOff: number = 1;
+    let lbOff: number = 2;
+    let laOff: number = 3;
+
+    switch (layerInfo.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        lbOff = 0;
+        lgOff = 1;
+        lrOff = 2;
+        laOff = 3;
+        break;
+      case image.PixelMapFormat.ARGB_8888:
+        laOff = 0;
+        lrOff = 1;
+        lgOff = 2;
+        lbOff = 3;
+        break;
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        lrOff = 0;
+        lgOff = 1;
+        lbOff = 2;
+        laOff = 3;
+        break;
+    }
+
+    // ------- watermark 通道偏移 -------
+    let wrOff: number = 0;
+    let wgOff: number = 1;
+    let wbOff: number = 2;
+    let waOff: number = 3;
+
+    switch (wmInfo.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        wbOff = 0;
+        wgOff = 1;
+        wrOff = 2;
+        waOff = 3;
+        break;
+      case image.PixelMapFormat.ARGB_8888:
+        waOff = 0;
+        wrOff = 1;
+        wgOff = 2;
+        wbOff = 3;
+        break;
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        wrOff = 0;
+        wgOff = 1;
+        wbOff = 2;
+        waOff = 3;
+        break;
+    }
+
+    // 简单策略：只要 watermark 像素 alpha > 0，就直接覆盖绘制层对应像素
+    for (let wy: number = 0; wy < wmH; wy++) {
+      const ty: number = offsetY + wy;
+      if (ty < 0 || ty >= layerH) {
+        continue;
+      }
+
+      for (let wx: number = 0; wx < wmW; wx++) {
+        const tx: number = offsetX + wx;
+        if (tx < 0 || tx >= layerW) {
+          continue;
+        }
+
+        const wmIdx: number = (wy * wmW + wx) * 4;
+        const waIdx: number = wmIdx + waOff;
+        const alpha: number = wmData[waIdx];
+
+        if (alpha === 0) {
+          // 水印这点完全透明，不用管
+          continue;
+        }
+
+        const lrIdx: number = (ty * layerW + tx) * 4 + lrOff;
+        const lgIdx: number = (ty * layerW + tx) * 4 + lgOff;
+        const lbIdx: number = (ty * layerW + tx) * 4 + lbOff;
+        const laIdx: number = (ty * layerW + tx) * 4 + laOff;
+
+        const wrIdx: number = wmIdx + wrOff;
+        const wgIdx: number = wmIdx + wgOff;
+        const wbIdx: number = wmIdx + wbOff;
+
+        layerData[lrIdx] = wmData[wrIdx];
+        layerData[lgIdx] = wmData[wgIdx];
+        layerData[lbIdx] = wmData[wbIdx];
+        layerData[laIdx] = alpha;
+      }
+    }
+
+    await layerPm.writeBufferToPixels(layerBuf);
+  }
+
+  // 调整水印大小
+  // 调整水印大小为目标尺寸
+  // 把水印缩放到不超过 targetWidth x targetHeight（保持长宽比）
+  // 如果本来就比目标小，就不缩放
+  private async resizeWatermark(
+    watermarkPm: image.PixelMap,
+    targetWidth: number,
+    targetHeight: number
+  ): Promise<image.PixelMap> {
+    const watermarkInfo: image.ImageInfo = await watermarkPm.getImageInfo();
+    const wmWidth: number = watermarkInfo.size.width;
+    const wmHeight: number = watermarkInfo.size.height;
+
+    // 已经比目标小，直接用原图
+    if (wmWidth <= targetWidth && wmHeight <= targetHeight) {
+      return watermarkPm;
+    }
+
+    // 计算缩放比例（保持比例，最长边 <= target）
+    const scaleX: number = targetWidth / wmWidth;
+    const scaleY: number = targetHeight / wmHeight;
+    const scale: number = Math.min(scaleX, scaleY);
+
+    // clone 一份水印，再缩放，避免直接改原始 PixelMap
+    const resized: image.PixelMap = await this.clonePixelMap(watermarkPm);
+
+    // 关键：真正把像素缩下去
+    resized.scale(scale, scale); // ArkTS 里 PixelMap 自带的缩放方法
+
+    return resized;
+  }
+
+  // 添加水印到当前绘制图层
+  private async addWatermark(): Promise<void> {
+    if (!this.pixelMap) {
+      promptAction.showToast({ message: '请先打开图片' });
+      return;
+    }
+
+    // 先压一份快照，支持撤销
+    await this.pushFullSnapshotBeforeChange();
+
+    // 确保有绘制图层
+    const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer();
+    if (!layerPm) {
+      promptAction.showToast({ message: '当前没有可编辑图层' });
+      return;
+    }
+
+    // 加载并调整水印大小（调整为 30x30px）
+    const logoPm: image.PixelMap = await this.loadLogoPixelMap();
+    const resizedLogoPm: image.PixelMap = await this.resizeWatermark(logoPm, 100, 100); // 调整为 30x30px
+
+    // 获取图层信息
+    const layerInfo: image.ImageInfo = await layerPm.getImageInfo();
+    const layerW: number = layerInfo.size.width;
+    const layerH: number = layerInfo.size.height;
+
+    // 获取水印图片的尺寸
+    const watermarkInfo: image.ImageInfo = await resizedLogoPm.getImageInfo();
+    const watermarkWidth: number = watermarkInfo.size.width;
+    const watermarkHeight: number = watermarkInfo.size.height;
+
+    // 右下角，预留 10px 边距
+    const margin: number = 10;
+    let offsetX: number = layerW - watermarkWidth - margin;
+    let offsetY: number = layerH - watermarkHeight - margin;
+
+    // 防止水印比图还大 / 出界
+    if (offsetX < 0) {
+      offsetX = 0;
+    }
+    if (offsetY < 0) {
+      offsetY = 0;
+    }
+
+    // 把调整好的水印贴到绘制图层
+    await this.pasteWatermarkIntoLayer(layerPm, resizedLogoPm, offsetX, offsetY);
+
+    // clone 一份新图层，强制 UI 刷新
+    const newLayer: image.PixelMap = await this.clonePixelMap(layerPm);
+    if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
+      this.drawPixelMap.release?.();
+    }
+    this.drawPixelMap = newLayer;
+    this.drawPixelVersion++;
+
+    // 写操作日志 + 协作同步
+    const desc: string = '在右下角添加了调整后的水印';
+    await this.logAndSyncAfterImageChange(desc);
+
+    promptAction.showToast({ message: '水印已添加' });
   }
 
   // 根据底图 pm 创建一张“完全透明”的绘制图层（尺寸 & 像素格式一致）
