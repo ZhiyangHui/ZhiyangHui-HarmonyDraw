@@ -1078,15 +1078,19 @@ struct Index {
   }
 
   private async loadLogoPixelMap(): Promise<image.PixelMap> {
-    const context = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const resMgr = context.resourceManager;
 
-    // 假设资源名就是 logo.png → app.media.logo
     const logoId: number = $r('app.media.logo').id;
 
     // 读出二进制数据（Uint8Array）
     const fileData: Uint8Array = await resMgr.getMediaContent(logoId);
-    const buffer: ArrayBuffer = fileData.buffer as ArrayBuffer;
+
+    // ⭐ 关键：只取这一段的有效数据，避免使用整个 buffer 带来的脏数据
+    const buffer: ArrayBuffer = fileData.buffer.slice(
+      fileData.byteOffset,
+      fileData.byteOffset + fileData.byteLength
+    );
 
     const imgSource: image.ImageSource = image.createImageSource(buffer);
     const logoPm: image.PixelMap = await imgSource.createPixelMap({
@@ -1237,27 +1241,95 @@ struct Index {
     targetWidth: number,
     targetHeight: number
   ): Promise<image.PixelMap> {
-    const watermarkInfo: image.ImageInfo = await watermarkPm.getImageInfo();
-    const wmWidth: number = watermarkInfo.size.width;
-    const wmHeight: number = watermarkInfo.size.height;
+    const wmInfo: image.ImageInfo = await watermarkPm.getImageInfo();
+    const srcW: number = wmInfo.size.width;
+    const srcH: number = wmInfo.size.height;
 
-    // 已经比目标小，直接用原图
-    if (wmWidth <= targetWidth && wmHeight <= targetHeight) {
+    // 水印本来就比目标小，直接用原图
+    if (srcW <= targetWidth && srcH <= targetHeight) {
       return watermarkPm;
     }
 
-    // 计算缩放比例（保持比例，最长边 <= target）
-    const scaleX: number = targetWidth / wmWidth;
-    const scaleY: number = targetHeight / wmHeight;
+    // 计算缩放比例（保持长宽比，最长边 = target）
+    const scaleX: number = targetWidth / srcW;
+    const scaleY: number = targetHeight / srcH;
     const scale: number = Math.min(scaleX, scaleY);
 
-    // clone 一份水印，再缩放，避免直接改原始 PixelMap
-    const resized: image.PixelMap = await this.clonePixelMap(watermarkPm);
+    // 得到新的宽高（至少 1 像素）
+    const newW: number = Math.max(1, Math.floor(srcW * scale));
+    const newH: number = Math.max(1, Math.floor(srcH * scale));
 
-    // 关键：真正把像素缩下去
-    resized.scale(scale, scale); // ArkTS 里 PixelMap 自带的缩放方法
+    // 读取原始水印像素
+    const srcLen: number = watermarkPm.getPixelBytesNumber();
+    const srcBuf: ArrayBuffer = new ArrayBuffer(srcLen);
+    await watermarkPm.readPixelsToBuffer(srcBuf);
+    const srcData: Uint8Array = new Uint8Array(srcBuf);
 
-    return resized;
+    // 准备目标像素缓冲区（我们用 RGBA_8888）
+    const dstBuf: ArrayBuffer = new ArrayBuffer(newW * newH * 4);
+    const dstData: Uint8Array = new Uint8Array(dstBuf);
+
+    // 源像素通道偏移
+    let srOff: number = 0;
+    let sgOff: number = 1;
+    let sbOff: number = 2;
+    let saOff: number = 3;
+
+    switch (wmInfo.pixelFormat) {
+      case image.PixelMapFormat.BGRA_8888:
+        sbOff = 0;
+        sgOff = 1;
+        srOff = 2;
+        saOff = 3;
+        break;
+      case image.PixelMapFormat.ARGB_8888:
+        saOff = 0;
+        srOff = 1;
+        sgOff = 2;
+        sbOff = 3;
+        break;
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        srOff = 0;
+        sgOff = 1;
+        sbOff = 2;
+        saOff = 3;
+        break;
+    }
+
+    // 最近邻缩放：对目标 (dx,dy)，在原图中找一个最近的 (sx,sy)
+    for (let dy: number = 0; dy < newH; dy++) {
+      const srcY: number = Math.min(srcH - 1, Math.floor(dy / scale));
+      for (let dx: number = 0; dx < newW; dx++) {
+        const srcX: number = Math.min(srcW - 1, Math.floor(dx / scale));
+
+        const srcIndex: number = (srcY * srcW + srcX) * 4;
+        const r: number = srcData[srcIndex + srOff];
+        const g: number = srcData[srcIndex + sgOff];
+        const b: number = srcData[srcIndex + sbOff];
+        const a: number = srcData[srcIndex + saOff];
+
+        const dstIndex: number = (dy * newW + dx) * 4;
+        // 目标我们直接按 RGBA 写
+        dstData[dstIndex + 0] = r;
+        dstData[dstIndex + 1] = g;
+        dstData[dstIndex + 2] = b;
+        dstData[dstIndex + 3] = a;
+      }
+    }
+
+    // 用我们自己生成的像素数据创建一张新的 PixelMap（RGBA_8888）
+    const opts: image.InitializationOptions = {
+      editable: true,
+      pixelFormat: image.PixelMapFormat.RGBA_8888,
+      size: {
+        width: newW,
+        height: newH
+      }
+    };
+
+    const resizedPm: image.PixelMap = await image.createPixelMap(dstBuf, opts);
+    return resizedPm;
   }
 
   // 添加水印到当前绘制图层
@@ -1316,7 +1388,7 @@ struct Index {
     this.drawPixelVersion++;
 
     // 写操作日志 + 协作同步
-    const desc: string = '在右下角添加了调整后的水印';
+    const desc: string = '在右下角添加了水印';
     await this.logAndSyncAfterImageChange(desc);
 
     promptAction.showToast({ message: '水印已添加' });

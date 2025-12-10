@@ -10,12 +10,14 @@
     },
     {
       "name": "EntryAbility_label",
-      "value": "label"
+      "value": "鸿绘"
     },
-    { "name": "perm_reason_read_image",
+    {
+      "name": "perm_reason_read_image",
       "value": "Read images from system gallery for editing"
     },
-    { "name": "perm_reason_write_image",
+    {
+      "name": "perm_reason_write_image",
       "value": "Save edited images to system gallery"
     }
   ]
