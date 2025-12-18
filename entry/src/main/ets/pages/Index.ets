@@ -1,16 +1,26 @@
+// ArkUI 交互弹窗与系统操作能力
 import { promptAction } from '@kit.ArkUI'
+// 媒体库访问（图片读取、保存）
 import { photoAccessHelper } from '@kit.MediaLibraryKit'
+// PixelMap 与图片处理能力
 import { image } from '@kit.ImageKit'
+// 文件读写能力
 import { fileIo } from '@kit.CoreFileKit'
+// Ability 上下文相关能力
 import { common } from '@kit.AbilityKit'
+// 系统标准错误类型
 import { BusinessError } from '@kit.BasicServicesKit'
+// 资源管理（string、media 等）
 import resourceManager from '@ohos.resourceManager'
+// 绘制 API（Canvas / Path / Paint）
 import drawing from '@ohos.graphics.drawing'
-
+// 工具类（时间、编码等）
 import util from '@ohos.util'
 
 // entry/src/main/ets/pages/Index.ets
+// 颜色选择组件
 import { ColorWheelPicker } from './ColorPicker'
+// 协作通信客户端及消息定义
 import {
   CollabClient,
   CollabMessage,
@@ -19,62 +29,67 @@ import {
   CollabImageSyncPayload,
   OnlineUsersPayload,
   OnlineUserItem
-} from '../common/net/CollabClient';
+} from '../common/net/CollabClient'
 
-// 自定义错误类型
+// 统一错误结构，兼容系统与自定义错误
 interface ErrorWithCode {
-  code?: number | string
-  message?: string
+  code?: number | string // 错误码
+  message?: string // 错误描述
 }
 
-// 在线用户信息
+// 在线用户展示信息
 interface OnlineUserInfo {
-  clientId: string; // 从协作消息里的 clientId 拿
-  displayColor: string; // 每个 client 用一个固定颜色
-  isSelf: boolean; // 是否是本机
+  clientId: string // 协作客户端 ID
+  displayColor: string // 用户标识颜色
+  isSelf: boolean // 是否为当前设备
 }
 
+// 画布状态快照，用于撤销 / 恢复
 interface CanvasSnapshot {
   pixelMap?: image.PixelMap // 底图快照
-  drawPixelMap?: image.PixelMap // ⭐ 新增：绘制图层快照
-  zoom: number
-  offsetX: number
-  offsetY: number
-  brightnessLevel: number
-  contrastLevel: number
-  accumulatedRotate: number
+  drawPixelMap?: image.PixelMap // 绘制图层快照
+  zoom: number // 当前缩放比例
+  offsetX: number // X 方向偏移
+  offsetY: number // Y 方向偏移
+  brightnessLevel: number // 亮度参数
+  contrastLevel: number // 对比度参数
+  accumulatedRotate: number // 累计旋转角度
 }
 
+// 操作记录，用于协作日志展示
 interface OperationLogItem {
-  id: number; // 本地自增 id，用来做 ForEach 的 key
-  userId: string; // 哪个用户
-  userColor: string; // 该用户代表色
-  message: string; // 做了什么操作
-  timestamp: string; // 时间戳 HH:MM:SS
+  id: number // 本地唯一标识
+  userId: string // 操作者 ID
+  userColor: string // 操作者颜色
+  message: string // 操作描述
+  timestamp: string // 操作时间
 }
 
+// 顶部菜单类型
 enum TopMenu {
-  None,
+  None, // 无菜单
   Image, // 图片操作
-  Shape, // 形状
-  Brush // 画笔
+  Shape, // 形状工具
+  Brush // 画笔工具
 }
 
+// 形状绘制工具类型
 enum ShapeTool {
-  None,
-  Point,
-  Line,
-  Rect,
-  Circle,
-  Ellipse,
-  FreeDraw
+  None, // 未选择
+  Point, // 点
+  Line, // 直线
+  Rect, // 矩形
+  Circle, // 圆
+  Ellipse, // 椭圆
+  FreeDraw // 自由绘制
 }
 
+// 画笔工具类型
 enum BrushTool {
-  None,
-  Pen,
-  Highlighter,
-  Eraser
+  None, // 未选择
+  Pen, // 普通画笔
+  Highlighter, // 荧光笔
+  Eraser // 橡皮擦
 }
 
 
