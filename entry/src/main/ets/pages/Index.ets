@@ -96,162 +96,158 @@ enum BrushTool {
 @Entry
 @Component
 struct Index {
-  // 画布状态
-  @State pixelMap?: image.PixelMap = undefined
-  @State zoom: number = 1.0
-  @State offsetX: number = 0
-  @State offsetY: number = 0
-  @State pixelVersion: number = 0
-  // ================= 新增：绘制图层 =================
-  // 专门用来画线条/形状，橡皮擦只擦这个层
-  @State drawPixelMap?: image.PixelMap = undefined
-  @State drawPixelVersion: number = 0
-  // ==================================================
-  // 旋转中标志，防止连点导致两次右旋
-  private isRotating: boolean = false
-  private accumulatedRotate: number = 0 // 之前旋转的总度数
-  // 旋转 / 亮度 / 对比度
-  @State rotateDeg: number = 0 // 旋转角度
-  @State brightnessLevel: number = 0.0 // -0.5 ~ 0.5 左右，0 是原图
-  @State contrastLevel: number = 0.0 // -1.0 ~ 1.0（0 是原图对比度）
-  @State showLeftPanel: boolean = false // 左侧工具栏是否展开
-  @State currentTool: string = '' // 当前选择的工具类型（point/line/rect...）
-  @State activeMenu: TopMenu = TopMenu.None // 当前展开的顶栏菜单
-  @State currentShape: ShapeTool = ShapeTool.None
-  @State currentBrush: BrushTool = BrushTool.Pen // 默认就是普通画笔
-  // 顶部菜单当前选中的一级菜单：image / shape / brush / ''(不显示二级)
-  @State currentMenu: string = 'image'
-  // 当前二级菜单（形状 / 画笔才会使用）
-  @State currentSubTool: string = ''
-  // 手势内部状态
-  private lastPanX: number = 0
-  private lastPanY: number = 0
-  private lastZoom: number = 1.0
-  // 裁剪模式 开/关
-  @State cropMode: boolean = false
-  // 手势选择框（UI 坐标）
-  @State cropStartX: number = 0
-  @State cropStartY: number = 0
-  @State cropEndX: number = 0
-  @State cropEndY: number = 0
-  // 画布大小（为了把 UI 坐标比例映射成像素坐标）
-  @State canvasWidth: number = 0
-  @State canvasHeight: number = 0
-  // 撤销用的历史栈（不需要响应式）
-  private history: Array<CanvasSnapshot> = []
-  private historyIndex: number = -1
-  private readonly historyLimit: number = 10
-  // 新增：记录“打开图片时的原图快照”
-  private originalPixelMap?: image.PixelMap = undefined
-  //全局画笔样式（形状 + 画笔共享）
-  @State strokeWidth: number = 4 // 像素半径，细笔/粗笔一起改这个
-  @State strokeR: number = 0 // 默认黑色
-  @State strokeG: number = 0
-  @State strokeB: number = 0
-  @State strokeOpacity: number = 1.0 // 0.0 ~ 1.0 画笔透明度（暂时只作为 UI）
-  // 当前是否正在绘制一个形状（线、矩形、圆等）
-  private isShapeDrawing: boolean = false
-  // 通用形状绘制的起点（UI 坐标）
-  private shapeStartUiX: number = 0
-  private shapeStartUiY: number = 0
-  // 自由绘制状态（形状 = ShapeTool.FreeDraw 时使用）
-  private isFreeDrawing: boolean = false
-  private freeLastUiX: number = 0
-  private freeLastUiY: number = 0
-  // 自由画开始时缓存原图像素
-  private freeDrawBuffer: Uint8Array | null = null
-  private freeDrawArrayBuffer: ArrayBuffer | null = null
-  private freeDrawByteLength: number = 0
-  private freeBufferReady: boolean = false
-  // 当前底图的对角线长度（像素），用于裁剪时温和缩放画笔
-  @State imageDiag: number = 0
-  // ==== 新增：协作 WebSocket 客户端 ====
-  // 把下面的 192.168.1.100 换成你运行 Node.js 服务器那台电脑的局域网 IP
-  // 不能用 0.0.0.0，要用具体 IP，比如 192.168.0.5
-  private collabClient: CollabClient = new CollabClient(
-    'ws://101.43.185.73:8080/collab'
-  );
-  // 给当前设备一个固定 id（不要每次点击都变）
-  @State localClientId: string = ''; // 服务器分配给自己的 id
-  @State localColor: string = '#000000'; // 自己的代表色
-  // 在线用户列表（包含自己和别人）
-  @State onlineUsers: Array<OnlineUserInfo> = [];
-  // 本机 clientId（给 CollabClient 用的那个 id，要保持一致）
-  private clientId: string = 'client-' + Date.now().toString();
-  // 简单的颜色池，按顺序给不同用户分颜色
-  private userColorPalette: Array<string> = [
-    '#2563EB', // 蓝
-    '#EC4899', // 粉
-    '#10B981', // 绿
-    '#F97316', // 橙
-    '#A855F7',// 紫
-  ];
-  private nextColorIndex: number = 0;
-  // 是否参与协作（控制是否连 WebSocket）
-  @State collabEnabled: boolean = true;
-  @State showOpLog: boolean = false; // 是否展开操作记录面板
-  @State opLogList: Array<OperationLogItem> = []; // 操作记录队列
-  private opSeq: number = 0; // 本地自增 id
-  private lastOpDesc: string = ''; //上一个协作操作
+  // ====================== 画布基础状态 ======================
+  @State pixelMap?: image.PixelMap = undefined // 当前底图 PixelMap
+  @State zoom: number = 1.0 // 当前缩放比例
+  @State offsetX: number = 0 // 画布 X 方向平移
+  @State offsetY: number = 0 // 画布 Y 方向平移
+  @State pixelVersion: number = 0 // 底图版本号，用于触发重绘
+  // ====================== 绘制图层 ======================
+  @State drawPixelMap?: image.PixelMap = undefined // 绘制专用图层（线条/形状）
+  @State drawPixelVersion: number = 0 // 绘制层版本号
+  // 橡皮擦只作用于 drawPixelMap，不影响底图
 
-  // ====== 新增：生命周期里初始化 / 关闭 WebSocket ======
-  // ====== 生命周期：页面出现时初始化 WebSocket ======
+  // ====================== 旋转与图像调整 ======================
+  private isRotating: boolean = false // 防止旋转按钮被连续触发
+  private accumulatedRotate: number = 0 // 累计旋转角度（度）
+  @State rotateDeg: number = 0 // 当前旋转角度
+  @State brightnessLevel: number = 0.0 // 亮度调整值（0 为原图）
+  @State contrastLevel: number = 0.0 // 对比度调整值（0 为原图）
+  // ====================== UI 与工具状态 ======================
+  @State showLeftPanel: boolean = false // 左侧工具栏是否展开
+  @State currentTool: string = '' // 当前工具字符串标识
+  @State activeMenu: TopMenu = TopMenu.None // 当前激活的顶栏菜单
+  @State currentShape: ShapeTool = ShapeTool.None // 当前形状工具
+  @State currentBrush: BrushTool = BrushTool.Pen // 当前画笔类型
+  @State currentMenu: string = 'image' // 当前一级菜单
+  @State currentSubTool: string = '' // 当前二级工具
+  // ====================== 手势状态 ======================
+  private lastPanX: number = 0 // 上一次拖动 X
+  private lastPanY: number = 0 // 上一次拖动 Y
+  private lastZoom: number = 1.0 // 上一次缩放比例
+  // ====================== 裁剪相关 ======================
+  @State cropMode: boolean = false // 是否处于裁剪模式
+  @State cropStartX: number = 0 // 裁剪起点 X（UI 坐标）
+  @State cropStartY: number = 0 // 裁剪起点 Y
+  @State cropEndX: number = 0 // 裁剪终点 X
+  @State cropEndY: number = 0 // 裁剪终点 Y
+  // ====================== 画布尺寸 ======================
+  @State canvasWidth: number = 0 // 画布显示宽度
+  @State canvasHeight: number = 0 // 画布显示高度
+  // ====================== 撤销 / 重做 ======================
+  private history: Array<CanvasSnapshot> = [] // 操作历史栈
+  private historyIndex: number = -1 // 当前历史索引
+  private readonly historyLimit: number = 10 // 最大历史步数
+  private originalPixelMap?: image.PixelMap = undefined // 打开图片时的原始快照
+  // ====================== 画笔样式 ======================
+  @State strokeWidth: number = 4 // 画笔粗细
+  @State strokeR: number = 0 // 画笔颜色 R
+  @State strokeG: number = 0 // 画笔颜色 G
+  @State strokeB: number = 0 // 画笔颜色 B
+  @State strokeOpacity: number = 1.0 // 画笔透明度
+  // ====================== 形状 / 自由绘制状态 ======================
+  private isShapeDrawing: boolean = false // 是否正在绘制形状
+  private shapeStartUiX: number = 0 // 形状起点 X（UI）
+  private shapeStartUiY: number = 0 // 形状起点 Y
+  private isFreeDrawing: boolean = false // 是否处于自由绘制
+  private freeLastUiX: number = 0 // 自由绘制上一个点 X
+  private freeLastUiY: number = 0 // 自由绘制上一个点 Y
+  // ====================== 自由绘制缓冲 ======================
+  private freeDrawBuffer: Uint8Array | null = null // 像素数据缓存
+  private freeDrawArrayBuffer: ArrayBuffer | null = null // ArrayBuffer 引用
+  private freeDrawByteLength: number = 0 // 缓冲区长度
+  private freeBufferReady: boolean = false // 缓冲是否就绪
+  // ====================== 图像辅助参数 ======================
+  @State imageDiag: number = 0 // 当前底图对角线长度（用于缩放画笔）
+  // ====================== 协作相关 ======================
+  private collabClient: CollabClient = new CollabClient(
+    'ws://101.43.185.73:8080/collab'// 协作服务器地址
+  )
+  @State localClientId: string = '' // 服务器分配的 clientId
+  @State localColor: string = '#000000' // 本机代表色
+  @State onlineUsers: Array<OnlineUserInfo> = [] // 当前在线用户列表
+  private clientId: string = 'client-' + Date.now().toString() // 本机唯一 clientId
+  // ====================== 协作用户配色 ======================
+  private userColorPalette: Array<string> = [// 协作用户颜色池
+    '#2563EB',
+    '#EC4899',
+    '#10B981',
+    '#F97316',
+    '#A855F7',
+  ]
+  private nextColorIndex: number = 0 // 下一个分配颜色索引
+  // ====================== 协作状态与日志 ======================
+  @State collabEnabled: boolean = true // 是否启用协作
+  @State showOpLog: boolean = false // 是否显示操作日志
+  @State opLogList: Array<OperationLogItem> = [] // 操作日志列表
+  private opSeq: number = 0 // 操作日志自增序号
+  private lastOpDesc: string = '' // 上一次协作操作描述
+
+  // ====== 生命周期：页面出现时初始化 / 关闭 WebSocket ======
   aboutToAppear(): void {
+    // 设置 WebSocket 的各类回调
     this.collabClient.setCallbacks(
+      // WebSocket 连接成功回调
       () => {
-        // onOpen
         console.log('[Collab] WebSocket open');
 
+        // 如果当前未开启协作，立即断开连接
         if (!this.collabEnabled) {
           this.collabClient.close();
           return;
         }
 
+        // 连接成功后先清空在线用户列表
         this.onlineUsers = [];
       },
+      // WebSocket 关闭回调
       () => {
         console.log('[Collab] WebSocket close');
-        this.onlineUsers = [];
-        this.localClientId = ''; // 断开后清空
+        this.onlineUsers = []; // 清空在线用户
+        this.localClientId = ''; // 重置本机 clientId
       },
+      // WebSocket 消息回调
       (msg: CollabMessage) => {
         console.log('[Collab] message = ' + JSON.stringify(msg));
 
-        // 🔴 远端用户：把不等于我的 clientId 的用户加入 remote 列表
+        // 如果是其他客户端发来的消息，确保其在在线用户列表中
         if (msg.clientId && msg.clientId !== this.clientId) {
           this.ensureRemoteUser(msg.clientId);
         }
 
-        // ========== ① 处理 assignId ==========
+        // ========== ① 处理服务器分配 clientId ==========
         if (msg.type === 'assignId') {
           const payload = msg.payload as CollabAssignIdPayload | undefined;
 
-          // 服务器分配给我的真正 clientId
+          // 保存服务器分配给本机的正式 clientId
           this.localClientId = msg.clientId ?? '';
 
-          // 使用服务器给的颜色
+          // 优先使用服务器指定的用户颜色
           const color: string =
             (payload && payload.displayColor) ||
             this.pickColorForClient(this.localClientId || this.clientId);
 
           this.localColor = color;
 
+          // 构造本机用户信息
           const selfUser: OnlineUserInfo = {
             clientId: this.localClientId || this.clientId,
             displayColor: color,
             isSelf: true
           };
 
-          // 在线列表里加入自己
+          // 将自己加入在线用户列表
           this.onlineUsers = [selfUser];
 
           console.info('[Collab] assigned id = ' + this.localClientId);
-          return;
+          return; // assignId 消息处理完后直接结束
         }
 
-        // ========== ② ⚡ 处理 onlineUsers 新消息（放在 assignId 后、其他消息前） ==========
+        // ========== ② 更新在线用户列表 ==========
         if (msg.type === 'onlineUsers') {
           const payload = msg.payload as OnlineUsersPayload;
+
+          // 用服务器下发的在线用户列表整体刷新本地状态
           this.onlineUsers = payload.users.map((u: OnlineUserItem): OnlineUserInfo => {
             const info: OnlineUserInfo = {
               clientId: u.clientId,
@@ -262,48 +258,46 @@ struct Index {
           });
         }
 
-
-        // ========== ③ clear 消息 ==========
+        // ========== ③ 处理远端清空画布 ==========
         if (msg.type === 'clear') {
           console.log('[Collab] remote clear layer, do resetView()');
-          this.resetView();
+          this.resetView(); // 清空本地画布视图
 
-          // 只记录别的用户的清空操作
+          // 仅记录其他用户触发的清空操作
           const selfId: string = this.localClientId || this.clientId;
           if (msg.clientId && msg.clientId !== selfId) {
-            // 不再自己算颜色，appendOpLog 会自己从 onlineUsers 里找
             this.appendOpLog(msg.clientId, '清空画布');
           }
         }
 
-
-        // ========== ④ imageSync 图片同步 ==========
+        // ========== ④ 处理图片同步消息 ==========
         if (msg.type === 'imageSync') {
           const payload = msg.payload as CollabImageSyncPayload;
           console.info('[Collab] receive image-sync from: ' + msg.clientId);
 
-          // 记录远端更新画布（同样跳过自己发的 echo）
+          // 跳过自己发送的同步回显，只记录远端操作
           const selfId: string = this.localClientId || this.clientId;
           if (msg.clientId && msg.clientId !== selfId) {
             const desc: string = payload.opDesc ?? '更新了画布';
-            // 不传 color，让 appendOpLog 自己从 onlineUsers 取颜色
             this.appendOpLog(msg.clientId, desc);
           }
 
+          // 应用远端同步过来的图片数据
           this.applyRemoteImage(payload).then(() => {
             console.info('[Collab] remote image applied');
             promptAction.showToast({ message: '已加载协作图片' });
           });
         }
 
-
-        // 更多消息类型在这里扩展...
+        // 其他协作消息类型在这里继续扩展
       },
+      // WebSocket 错误回调
       (err: string) => {
         console.error('[Collab] error = ' + err);
       }
     );
 
+    // 主动发起 WebSocket 连接
     this.collabClient.connect();
   }
 
