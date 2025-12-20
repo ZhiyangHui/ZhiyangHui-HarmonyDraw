@@ -1201,55 +1201,21 @@ struct Index {
     const layerData: Uint8Array = new Uint8Array(layerBuf);
     const wmData: Uint8Array = new Uint8Array(wmBuf);
 
-    // ------- 绘制层通道偏移（适配不同像素格式） -------
-    let lrOff: number = 0;
-    let lgOff: number = 1;
-    let lbOff: number = 2;
-    let laOff: number = 3;
+    // ✅ 统一使用通用通道顺序
+    const layerCh: ChannelOrder = this.getChannelOrder(layerInfo.pixelFormat)
+    const wmCh: ChannelOrder = this.getChannelOrder(wmInfo.pixelFormat)
 
-    switch (layerInfo.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        lbOff = 0;
-        lgOff = 1;
-        lrOff = 2;
-        laOff = 3;
-        break;
-      case image.PixelMapFormat.ARGB_8888:
-        laOff = 0;
-        lrOff = 1;
-        lgOff = 2;
-        lbOff = 3;
-        break;
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        lrOff = 0; lgOff = 1; lbOff = 2; laOff = 3;
-        break;
-    }
+    // 绘制层 offsets
+    const lrOff: number = layerCh.r
+    const lgOff: number = layerCh.g
+    const lbOff: number = layerCh.b
+    const laOff: number = layerCh.a
 
-    // ------- 水印通道偏移（同样要适配像素格式） -------
-    let wrOff: number = 0;
-    let wgOff: number = 1;
-    let wbOff: number = 2;
-    let waOff: number = 3;
-
-    switch (wmInfo.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        wbOff = 0;
-        wgOff = 1;
-        wrOff = 2;
-        waOff = 3;
-        break;
-      case image.PixelMapFormat.ARGB_8888:
-        waOff = 0;
-        wrOff = 1;
-        wgOff = 2;
-        wbOff = 3;
-        break;
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        wrOff = 0; wgOff = 1; wbOff = 2; waOff = 3;
-        break;
-    }
+    // 水印 offsets
+    const wrOff: number = wmCh.r
+    const wgOff: number = wmCh.g
+    const wbOff: number = wmCh.b
+    const waOff: number = wmCh.a
 
     // 遍历水印像素，将非透明像素覆盖到绘制层
     for (let wy: number = 0; wy < wmH; wy++) {
@@ -1331,29 +1297,13 @@ struct Index {
     const dstData: Uint8Array = new Uint8Array(dstBuf);
 
     // 源像素通道偏移（适配不同像素格式）
-    let srOff: number = 0;
-    let sgOff: number = 1;
-    let sbOff: number = 2;
-    let saOff: number = 3;
-
-    switch (wmInfo.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        sbOff = 0;
-        sgOff = 1;
-        srOff = 2;
-        saOff = 3;
-        break;
-      case image.PixelMapFormat.ARGB_8888:
-        saOff = 0;
-        srOff = 1;
-        sgOff = 2;
-        sbOff = 3;
-        break;
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        srOff = 0; sgOff = 1; sbOff = 2; saOff = 3;
-        break;
-    }
+    // ✅ 源 PixelMap 的通道顺序（统一走通用方法）
+    const srcCh: ChannelOrder = this.getChannelOrder(wmInfo.pixelFormat)
+    const srOff: number = srcCh.r
+    const sgOff: number = srcCh.g
+    const sbOff: number = srcCh.b
+    const saOff: number = srcCh.a
+    const srcBpp: number = srcCh.bytesPerPixel // 你这里固定是 4，但仍建议用通用字段
 
     // 最近邻缩放：目标像素直接取原图中最接近的像素
     for (let dy: number = 0; dy < newH; dy++) {
@@ -3171,36 +3121,13 @@ struct Index {
     const width: number = imgW
     const height: number = imgH
 
-    // 通道偏移
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        // B G R A
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        // A R G B
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-      // R G B A
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
+    // ✅ 统一通道顺序：所有读写像素都走 getChannelOrder
+    const ch: ChannelOrder = this.getChannelOrder(pixelFormat)
+    const rOffset: number = ch.r
+    const gOffset: number = ch.g
+    const bOffset: number = ch.b
+    const aOffset: number = ch.a
+    const bpp: number = ch.bytesPerPixel
 
     const radius: number = this.computeStrokeRadiusPixel(imgW, imgH)
     const alpha: number = this.getStrokeAlpha()
@@ -3358,6 +3285,8 @@ struct Index {
   // 把 overlayPm（drawPixelMap）按 alpha 合成到 basePm 上（只修改 basePm）
   // 把绘制图层 overlayPm “盖”到 basePm 上：
   // 只要 overlay 像素 alpha > 0，就直接用 overlay 的 RGBA 覆盖 base 对应像素
+  // 把 overlayPm（drawPixelMap）按 alpha 合成到 basePm 上（只修改 basePm）
+  // 规则：只要 overlay 像素 alpha > 0，就用 overlay 的 RGBA 覆盖 base 对应像素
   private async mergeDrawLayerIntoBase(
     basePm: image.PixelMap,
     overlayPm: image.PixelMap
@@ -3368,7 +3297,7 @@ struct Index {
     const width: number = baseInfo.size.width
     const height: number = baseInfo.size.height
 
-    // 尺寸对不上，先尽量不崩，直接返回（下面第 2 步会保证裁剪时同步裁剪绘制层）
+    // 尺寸对不上，避免崩溃直接返回
     if (overInfo.size.width !== width || overInfo.size.height !== height) {
       console.warn(
         `mergeDrawLayerIntoBase: size mismatch base=${width}x${height} over=${overInfo.size.width}x${overInfo.size.height}`
@@ -3388,88 +3317,64 @@ struct Index {
     const baseData: Uint8Array = new Uint8Array(baseBuf)
     const overData: Uint8Array = new Uint8Array(overBuf)
 
-    // ------- base 通道偏移 -------
-    let brOff: number = 0
-    let bgOff: number = 1
-    let bbOff: number = 2
-    let baOff: number = 3
+    // ✅ 统一通道顺序：全部走 getChannelOrder
+    const bch: ChannelOrder = this.getChannelOrder(baseInfo.pixelFormat)
+    const och: ChannelOrder = this.getChannelOrder(overInfo.pixelFormat)
 
-    switch (baseInfo.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        bbOff = 0
-        bgOff = 1
-        brOff = 2
-        baOff = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        baOff = 0
-        brOff = 1
-        bgOff = 2
-        bbOff = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        brOff = 0
-        bgOff = 1
-        bbOff = 2
-        baOff = 3
-        break
+    // 统一 bpp（你们当前都是 4；若未来出现不一致，这里直接保护退出）
+    if (bch.bytesPerPixel !== och.bytesPerPixel) {
+      console.warn(
+        `mergeDrawLayerIntoBase: bytesPerPixel mismatch base=${bch.bytesPerPixel} over=${och.bytesPerPixel}`
+      )
+      return
     }
-
-    // ------- overlay 通道偏移 -------
-    let orOff: number = 0
-    let ogOff: number = 1
-    let obOff: number = 2
-    let oaOff: number = 3
-
-    switch (overInfo.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        obOff = 0
-        ogOff = 1
-        orOff = 2
-        oaOff = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        oaOff = 0
-        orOff = 1
-        ogOff = 2
-        obOff = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        orOff = 0
-        ogOff = 1
-        obOff = 2
-        oaOff = 3
-        break
-    }
+    const bpp: number = bch.bytesPerPixel
 
     // ------- 简单粗暴：只要 overlay alpha > 0，就覆盖 base -------
     for (let y: number = 0; y < height; y++) {
       for (let x: number = 0; x < width; x++) {
-        const idx: number = (y * width + x) * 4
+        const idx: number = (y * width + x) * bpp
 
-        const oaIdx: number = idx + oaOff
+        const oaIdx: number = idx + och.a
+        if (oaIdx < 0 || oaIdx >= overData.length) {
+          continue
+        }
         const alphaOver: number = overData[oaIdx]
-
         if (alphaOver === 0) {
-          // 没画东西/被橡皮擦擦掉的区域 → 直接跳过
+          // 没画东西/被橡皮擦擦掉的区域 → 跳过
           continue
         }
 
-        const orIdx: number = idx + orOff
-        const ogIdx: number = idx + ogOff
-        const obIdx: number = idx + obOff
+        const orIdx: number = idx + och.r
+        const ogIdx: number = idx + och.g
+        const obIdx: number = idx + och.b
 
-        const brIdx: number = idx + brOff
-        const bgIdx: number = idx + bgOff
-        const bbIdx: number = idx + bbOff
-        const baIdx: number = idx + baOff
+        const brIdx: number = idx + bch.r
+        const bgIdx: number = idx + bch.g
+        const bbIdx: number = idx + bch.b
+        const baIdx: number = idx + bch.a
+
+        // 保险：避免越界（未来 bpp/格式扩展时更安全）
+        if (
+          orIdx < 0 || orIdx >= overData.length ||
+            ogIdx < 0 || ogIdx >= overData.length ||
+            obIdx < 0 || obIdx >= overData.length
+        ) {
+          continue
+        }
+        if (
+          brIdx < 0 || brIdx >= baseData.length ||
+            bgIdx < 0 || bgIdx >= baseData.length ||
+            bbIdx < 0 || bbIdx >= baseData.length ||
+            baIdx < 0 || baIdx >= baseData.length
+        ) {
+          continue
+        }
 
         baseData[brIdx] = overData[orIdx]
         baseData[bgIdx] = overData[ogIdx]
         baseData[bbIdx] = overData[obIdx]
-        baseData[baIdx] = alphaOver // 或者 255，看你需求，这里保留 overlay 原始 alpha
+        baseData[baIdx] = alphaOver // 保留 overlay 原始 alpha（如需强制 255，可在此改成 255）
       }
     }
 
