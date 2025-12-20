@@ -92,6 +92,15 @@ enum BrushTool {
   Eraser // 橡皮擦
 }
 
+// 通道顺序（r/g/b/a 在每个像素 4 字节中的偏移）
+interface ChannelOrder {
+  r: number
+  g: number
+  b: number
+  a: number
+  bytesPerPixel: number
+}
+
 
 @Entry
 @Component
@@ -345,7 +354,7 @@ struct Index {
                   this.currentMenu = this.currentMenu === 'brush' ? '' : 'brush'
                 })
 
-              // ✅ 新增：一级按钮：分享
+              // 新增：一级按钮：分享
               // Button('分享', { type: ButtonType.Capsule })
               //   .height(32)
               //   .fontSize(12)
@@ -1077,36 +1086,79 @@ struct Index {
     }
   }
 
-  private async shareToWeChat(): Promise<void> {
-  }
+  // 统一通道顺序：所有读写像素的函数都用它
+  private getChannelOrder(fmt: image.PixelMapFormat): ChannelOrder {
+    // 默认按 RGBA_8888
+    let order: ChannelOrder = {
+      r: 0,
+      g: 1,
+      b: 2,
+      a: 3,
+      bytesPerPixel: 4
+    }
 
-  private async shareToWeibo(): Promise<void> {
-  }
+    switch (fmt) {
+      case image.PixelMapFormat.BGRA_8888:
+        order = {
+          r: 2,
+          g: 1,
+          b: 0,
+          a: 3,
+          bytesPerPixel: 4
+        }
+        break
+      case image.PixelMapFormat.ARGB_8888:
+        order = {
+          r: 1,
+          g: 2,
+          b: 3,
+          a: 0,
+          bytesPerPixel: 4
+        }
+        break
+      case image.PixelMapFormat.RGBA_8888:
+      default:
+        order = {
+          r: 0,
+          g: 1,
+          b: 2,
+          a: 3,
+          bytesPerPixel: 4
+        }
+        break
+    }
 
-  private async shareByEmail(): Promise<void> {
+    return order
   }
 
   private async loadLogoPixelMap(): Promise<image.PixelMap> {
+    // 获取当前 UIAbility 的上下文
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    // 从上下文中拿资源管理器
     const resMgr = context.resourceManager;
 
+    // 获取 logo 图片资源的 id
     const logoId: number = $r('app.media.logo').id;
 
-    // 读出二进制数据（Uint8Array）
+    // 从资源中读取图片的二进制数据
     const fileData: Uint8Array = await resMgr.getMediaContent(logoId);
 
-    // ⭐ 关键：只取这一段的有效数据，避免使用整个 buffer 带来的脏数据
+    // 只截取 Uint8Array 实际有效的数据范围，避免 buffer 中的多余字节
     const buffer: ArrayBuffer = fileData.buffer.slice(
       fileData.byteOffset,
       fileData.byteOffset + fileData.byteLength
     );
 
+    // 使用图片二进制数据创建 ImageSource
     const imgSource: image.ImageSource = image.createImageSource(buffer);
+    // 从 ImageSource 生成可编辑的 PixelMap
     const logoPm: image.PixelMap = await imgSource.createPixelMap({
       editable: true
     });
+    // 释放 ImageSource，避免资源泄漏
     imgSource.release?.();
 
+    // 返回生成的 PixelMap
     return logoPm;
   }
 
@@ -1117,34 +1169,39 @@ struct Index {
     offsetX: number,
     offsetY: number
   ): Promise<void> {
+    // 获取绘制层和水印的图像信息
     const layerInfo: image.ImageInfo = await layerPm.getImageInfo();
     const wmInfo: image.ImageInfo = await watermarkPm.getImageInfo();
 
+    // 绘制层与水印的宽高
     const layerW: number = layerInfo.size.width;
     const layerH: number = layerInfo.size.height;
     const wmW: number = wmInfo.size.width;
     const wmH: number = wmInfo.size.height;
 
-    // 尺寸兜底：完全在外面就不用画
+    // 尺寸异常时直接跳过
     if (wmW <= 0 || wmH <= 0 || layerW <= 0 || layerH <= 0) {
       console.info('>>> pasteWatermarkIntoLayer: invalid size, skip');
       return;
     }
 
-    // 读取像素数据
+    // 获取绘制层和水印的像素字节长度
     const layerLen: number = layerPm.getPixelBytesNumber();
     const wmLen: number = watermarkPm.getPixelBytesNumber();
 
+    // 为绘制层和水印分别准备像素缓冲区
     const layerBuf: ArrayBuffer = new ArrayBuffer(layerLen);
     const wmBuf: ArrayBuffer = new ArrayBuffer(wmLen);
 
+    // 读取 PixelMap 像素到缓冲区
     await layerPm.readPixelsToBuffer(layerBuf);
     await watermarkPm.readPixelsToBuffer(wmBuf);
 
+    // 将缓冲区转成 Uint8Array 方便逐字节访问
     const layerData: Uint8Array = new Uint8Array(layerBuf);
     const wmData: Uint8Array = new Uint8Array(wmBuf);
 
-    // ------- layer 通道偏移 -------
+    // ------- 绘制层通道偏移（适配不同像素格式） -------
     let lrOff: number = 0;
     let lgOff: number = 1;
     let lbOff: number = 2;
@@ -1165,14 +1222,11 @@ struct Index {
         break;
       case image.PixelMapFormat.RGBA_8888:
       default:
-        lrOff = 0;
-        lgOff = 1;
-        lbOff = 2;
-        laOff = 3;
+        lrOff = 0; lgOff = 1; lbOff = 2; laOff = 3;
         break;
     }
 
-    // ------- watermark 通道偏移 -------
+    // ------- 水印通道偏移（同样要适配像素格式） -------
     let wrOff: number = 0;
     let wgOff: number = 1;
     let wbOff: number = 2;
@@ -1193,14 +1247,11 @@ struct Index {
         break;
       case image.PixelMapFormat.RGBA_8888:
       default:
-        wrOff = 0;
-        wgOff = 1;
-        wbOff = 2;
-        waOff = 3;
+        wrOff = 0; wgOff = 1; wbOff = 2; waOff = 3;
         break;
     }
 
-    // 简单策略：只要 watermark 像素 alpha > 0，就直接覆盖绘制层对应像素
+    // 遍历水印像素，将非透明像素覆盖到绘制层
     for (let wy: number = 0; wy < wmH; wy++) {
       const ty: number = offsetY + wy;
       if (ty < 0 || ty >= layerH) {
@@ -1217,20 +1268,22 @@ struct Index {
         const waIdx: number = wmIdx + waOff;
         const alpha: number = wmData[waIdx];
 
+        // 水印像素完全透明时不处理
         if (alpha === 0) {
-          // 水印这点完全透明，不用管
           continue;
         }
 
-        const lrIdx: number = (ty * layerW + tx) * 4 + lrOff;
-        const lgIdx: number = (ty * layerW + tx) * 4 + lgOff;
-        const lbIdx: number = (ty * layerW + tx) * 4 + lbOff;
-        const laIdx: number = (ty * layerW + tx) * 4 + laOff;
+        const baseIdx: number = (ty * layerW + tx) * 4;
+        const lrIdx: number = baseIdx + lrOff;
+        const lgIdx: number = baseIdx + lgOff;
+        const lbIdx: number = baseIdx + lbOff;
+        const laIdx: number = baseIdx + laOff;
 
         const wrIdx: number = wmIdx + wrOff;
         const wgIdx: number = wmIdx + wgOff;
         const wbIdx: number = wmIdx + wbOff;
 
+        // 直接用水印颜色覆盖绘制层
         layerData[lrIdx] = wmData[wrIdx];
         layerData[lgIdx] = wmData[wgIdx];
         layerData[lbIdx] = wmData[wbIdx];
@@ -1238,47 +1291,46 @@ struct Index {
       }
     }
 
+    // 将修改后的像素写回绘制层 PixelMap
     await layerPm.writeBufferToPixels(layerBuf);
   }
 
-  // 调整水印大小
-  // 调整水印大小为目标尺寸
-  // 把水印缩放到不超过 targetWidth x targetHeight（保持长宽比）
-  // 如果本来就比目标小，就不缩放
+  // 将水印缩放到不超过 targetWidth x targetHeight（保持长宽比）
   private async resizeWatermark(
     watermarkPm: image.PixelMap,
     targetWidth: number,
     targetHeight: number
   ): Promise<image.PixelMap> {
+    // 获取水印原始尺寸
     const wmInfo: image.ImageInfo = await watermarkPm.getImageInfo();
     const srcW: number = wmInfo.size.width;
     const srcH: number = wmInfo.size.height;
 
-    // 水印本来就比目标小，直接用原图
+    // 水印本来就比目标小，直接返回原图
     if (srcW <= targetWidth && srcH <= targetHeight) {
       return watermarkPm;
     }
 
-    // 计算缩放比例（保持长宽比，最长边 = target）
+    // 计算缩放比例，保证最长边不超过目标尺寸
     const scaleX: number = targetWidth / srcW;
     const scaleY: number = targetHeight / srcH;
     const scale: number = Math.min(scaleX, scaleY);
 
-    // 得到新的宽高（至少 1 像素）
+    // 计算缩放后的新尺寸
     const newW: number = Math.max(1, Math.floor(srcW * scale));
     const newH: number = Math.max(1, Math.floor(srcH * scale));
 
-    // 读取原始水印像素
+    // 读取原始水印像素数据
     const srcLen: number = watermarkPm.getPixelBytesNumber();
     const srcBuf: ArrayBuffer = new ArrayBuffer(srcLen);
     await watermarkPm.readPixelsToBuffer(srcBuf);
     const srcData: Uint8Array = new Uint8Array(srcBuf);
 
-    // 准备目标像素缓冲区（我们用 RGBA_8888）
+    // 为缩放后的图像准备 RGBA 缓冲区
     const dstBuf: ArrayBuffer = new ArrayBuffer(newW * newH * 4);
     const dstData: Uint8Array = new Uint8Array(dstBuf);
 
-    // 源像素通道偏移
+    // 源像素通道偏移（适配不同像素格式）
     let srOff: number = 0;
     let sgOff: number = 1;
     let sbOff: number = 2;
@@ -1299,14 +1351,11 @@ struct Index {
         break;
       case image.PixelMapFormat.RGBA_8888:
       default:
-        srOff = 0;
-        sgOff = 1;
-        sbOff = 2;
-        saOff = 3;
+        srOff = 0; sgOff = 1; sbOff = 2; saOff = 3;
         break;
     }
 
-    // 最近邻缩放：对目标 (dx,dy)，在原图中找一个最近的 (sx,sy)
+    // 最近邻缩放：目标像素直接取原图中最接近的像素
     for (let dy: number = 0; dy < newH; dy++) {
       const srcY: number = Math.min(srcH - 1, Math.floor(dy / scale));
       for (let dx: number = 0; dx < newW; dx++) {
@@ -1319,7 +1368,6 @@ struct Index {
         const a: number = srcData[srcIndex + saOff];
 
         const dstIndex: number = (dy * newW + dx) * 4;
-        // 目标我们直接按 RGBA 写
         dstData[dstIndex + 0] = r;
         dstData[dstIndex + 1] = g;
         dstData[dstIndex + 2] = b;
@@ -1327,14 +1375,11 @@ struct Index {
       }
     }
 
-    // 用我们自己生成的像素数据创建一张新的 PixelMap（RGBA_8888）
+    // 用生成的 RGBA 像素数据创建新的 PixelMap
     const opts: image.InitializationOptions = {
       editable: true,
       pixelFormat: image.PixelMapFormat.RGBA_8888,
-      size: {
-        width: newW,
-        height: newH
-      }
+      size: { width: newW, height: newH }
     };
 
     const resizedPm: image.PixelMap = await image.createPixelMap(dstBuf, opts);
@@ -2013,96 +2058,6 @@ struct Index {
     ]
   }
 
-  // 把当前 brightnessLevel & contrastLevel 一起烘焙到 pixelMap 里
-  // 注意：调用后会把 brightnessLevel / contrastLevel 归零，并触发一次刷新
-  private async bakeToneToPixelMap(pm: image.PixelMap): Promise<void> {
-    // 没有调整亮度和对比度就不用动像素，直接返回
-    if (this.brightnessLevel === 0 && this.contrastLevel === 0) {
-      return
-    }
-
-    // 读出像素数据
-    const info: image.ImageInfo = await pm.getImageInfo()
-    const byteLength: number = pm.getPixelBytesNumber()
-    const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
-    await pm.readPixelsToBuffer(buffer)
-    const data: Uint8Array = new Uint8Array(buffer)
-
-    // 判断通道顺序，防止颜色错乱
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (info.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        // B G R A
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        // A R G B
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-      // R G B A
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
-
-    // 对比度系数 c（0~2），亮度偏移 *255
-    const c: number = 1.0 + this.contrastLevel
-    const shiftBrightness: number = this.brightnessLevel * 255.0
-    // 把公式 new = (old - 128)*c + 128 + shiftBrightness 展开：
-    const shiftTotal: number = 128.0 * (1.0 - c) + shiftBrightness
-
-    const clamp = (v: number): number => {
-      if (v < 0) {
-        return 0
-      }
-      if (v > 255) {
-        return 255
-      }
-      return v
-    }
-
-    // 遍历一次像素，真正改掉 R/G/B 通道
-    for (let i: number = 0; i < data.length; i += 4) {
-      const rIndex: number = i + rOffset
-      const gIndex: number = i + gOffset
-      const bIndex: number = i + bOffset
-      const aIndex: number = i + aOffset
-
-      const r = data[rIndex]
-      const g = data[gIndex]
-      const b = data[bIndex]
-
-      data[rIndex] = clamp(c * r + shiftTotal)
-      data[gIndex] = clamp(c * g + shiftTotal)
-      data[bIndex] = clamp(c * b + shiftTotal)
-      // alpha 原样保持
-      data[aIndex] = data[aIndex]
-    }
-
-    // 把修改后的像素写回 pixelMap
-    await pm.writeBufferToPixels(buffer)
-
-    // 把状态归零：此时底层像素已经是“新亮度 + 新对比度”
-    // 再把 colorFilter 的参数设回 0，视觉效果保持不变（不会叠加两次）
-    this.brightnessLevel = 0.0
-    this.contrastLevel = 0.0
-    this.pixelVersion++ // 触发 Image 重新渲染一次
-  }
-
   // 对比度调整
   private async adjustContrast(delta: number) {
     if (!this.pixelMap) {
@@ -2317,33 +2272,11 @@ struct Index {
     await targetPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
-    // 通道顺序
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (info.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
+    const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
+    const rOffset: number = ch.r
+    const gOffset: number = ch.g
+    const bOffset: number = ch.b
+    const aOffset: number = ch.a
 
     const radius: number = this.computeStrokeRadiusPixel(imgW, imgH)
     const alpha: number = this.getStrokeAlpha()
@@ -2516,33 +2449,11 @@ struct Index {
     await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
-    // 4. 通道顺序
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (info.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
+    const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
+    const rOffset: number = ch.r
+    const gOffset: number = ch.g
+    const bOffset: number = ch.b
+    const aOffset: number = ch.a
 
     const radius: number = this.computeStrokeRadiusPixel(width, height)
     const alpha: number = this.getStrokeAlpha()
@@ -2734,33 +2645,11 @@ struct Index {
     await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
-    // 4）确定通道顺序
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (info.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
+    const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
+    const rOffset: number = ch.r
+    const gOffset: number = ch.g
+    const bOffset: number = ch.b
+    const aOffset: number = ch.a
 
     const radius: number = this.computeStrokeRadiusPixel(width, height)
     const alpha: number = this.getStrokeAlpha()
@@ -2876,33 +2765,11 @@ struct Index {
     await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
-    // 2）通道顺序
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (info.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
+    const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
+    const rOffset: number = ch.r
+    const gOffset: number = ch.g
+    const bOffset: number = ch.b
+    const aOffset: number = ch.a
 
     const strokeRadius: number = this.computeStrokeRadiusPixel(width, height)
 
@@ -3156,33 +3023,11 @@ struct Index {
     await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
-    // 2）通道顺序
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (info.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
+    const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
+    const rOffset: number = ch.r
+    const gOffset: number = ch.g
+    const bOffset: number = ch.b
+    const aOffset: number = ch.a
 
     const thickRadius: number = this.computeStrokeRadiusPixel(width, height)
     const alpha: number = this.getStrokeAlpha()
@@ -3644,33 +3489,11 @@ struct Index {
     await pm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
-    // 通道顺序
-    let rOffset: number = 0
-    let gOffset: number = 1
-    let bOffset: number = 2
-    let aOffset: number = 3
-
-    switch (info.pixelFormat) {
-      case image.PixelMapFormat.BGRA_8888:
-        bOffset = 0
-        gOffset = 1
-        rOffset = 2
-        aOffset = 3
-        break
-      case image.PixelMapFormat.ARGB_8888:
-        aOffset = 0
-        rOffset = 1
-        gOffset = 2
-        bOffset = 3
-        break
-      case image.PixelMapFormat.RGBA_8888:
-      default:
-        rOffset = 0
-        gOffset = 1
-        bOffset = 2
-        aOffset = 3
-        break
-    }
+    const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
+    const rOffset: number = ch.r
+    const gOffset: number = ch.g
+    const bOffset: number = ch.b
+    const aOffset: number = ch.a
 
     // 和你原来一致的亮度/对比度计算
     const c: number = 1.0 + this.contrastLevel
