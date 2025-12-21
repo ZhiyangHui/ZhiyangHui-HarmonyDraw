@@ -101,6 +101,12 @@ interface ChannelOrder {
   bytesPerPixel: number
 }
 
+// UI 坐标转像素坐标的返回类型
+interface PixelPoint {
+  x: number
+  y: number
+}
+
 
 @Entry
 @Component
@@ -2447,61 +2453,96 @@ struct Index {
     )
   }
 
-  // 在像素缓冲区中以(cx, cy)为中心画一个有粗细的实心点，供画线/画点复用
-  // 在像素缓冲区中以 (cx, cy) 为中心画一个有粗细的实心点（画点/画线复用）
+  // 把画布坐标转成图片像素坐标（所有工具共用）
+  private async uiToPixel(uiX: number, uiY: number): Promise<PixelPoint | undefined> {
+    if (!this.pixelMap) {
+      return undefined
+    }
+    if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
+      return undefined
+    }
+
+    const pm: image.PixelMap = this.pixelMap as image.PixelMap
+    const info: image.ImageInfo = await pm.getImageInfo()
+
+    const imgW: number = info.size.width
+    const imgH: number = info.size.height
+
+    const scaleBase: number = Math.min(this.canvasWidth / imgW, this.canvasHeight / imgH)
+    if (scaleBase <= 0) {
+      return undefined
+    }
+
+    const realW: number = imgW * scaleBase * this.zoom
+    const realH: number = imgH * scaleBase * this.zoom
+
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+
+    const px: number = Math.floor((uiX - imageLeft) * (imgW / realW))
+    const py: number = Math.floor((uiY - imageTop) * (imgH / realH))
+
+    // 关键：返回对象字面量也要“落到已声明的类型”上
+    const pt: PixelPoint = { x: px, y: py }
+    return pt
+  }
+
+  // 在像素缓冲区中以 (cx, cy) 为中心画一个有粗细的实心点，供画点和画线复用
   private drawThickPointIntoBuffer(
-    data: Uint8Array,
-    width: number,
-    height: number,
-    cx: number,
-    cy: number,
-    radius: number,
-    rOffset: number,
-    gOffset: number,
-    bOffset: number,
-    aOffset: number,
-    alpha: number,
-    bpp: number // 每个像素占多少字节（RGBA/BGRA/ARGB 一般都是 4）
+    data: Uint8Array, // 整张图的像素数据缓冲区
+    width: number, // 图像宽度（像素）
+    height: number, // 图像高度（像素）
+    cx: number, // 点中心的 x 坐标
+    cy: number, // 点中心的 y 坐标
+    radius: number, // 点的半径（决定粗细）
+    rOffset: number, // R 通道在像素中的偏移
+    gOffset: number, // G 通道在像素中的偏移
+    bOffset: number, // B 通道在像素中的偏移
+    aOffset: number, // A 通道在像素中的偏移
+    alpha: number, // 当前画笔的透明度
+    bpp: number // 每个像素占用的字节数（通常是 4）
   ): void {
+    // 在圆的垂直范围内逐行扫描
     for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
       if (yy < 0 || yy >= height) {
         continue
       }
 
+      // 在圆的水平方向范围内逐列扫描
       for (let xx: number = cx - radius; xx <= cx + radius; xx++) {
         if (xx < 0 || xx >= width) {
           continue
         }
 
-        const dx: number = xx - cx
-        const dy: number = yy - cy
+        const dx: number = xx - cx // 当前像素到中心点的 x 距离
+        const dy: number = yy - cy // 当前像素到中心点的 y 距离
         if (dx * dx + dy * dy > radius * radius) {
-          continue
+          continue // 在圆外的像素直接跳过
         }
 
-        const baseIndex: number = (yy * width + xx) * bpp // 原来写死 *4，这里改成 *bpp
-        const rIndex: number = baseIndex + rOffset
-        const gIndex: number = baseIndex + gOffset
-        const bIndex: number = baseIndex + bOffset
-        const aIndex: number = baseIndex + aOffset
+        const baseIndex: number = (yy * width + xx) * bpp // 当前像素在 buffer 中的起始位置
+        const rIndex: number = baseIndex + rOffset // R 通道索引
+        const gIndex: number = baseIndex + gOffset // G 通道索引
+        const bIndex: number = baseIndex + bOffset // B 通道索引
+        const aIndex: number = baseIndex + aOffset // A 通道索引
 
         if (aIndex < 0 || aIndex >= data.length) {
-          continue
+          continue // 防止数组越界
         }
 
         if (this.currentBrush === BrushTool.Eraser) {
-          data[aIndex] = 0
+          data[aIndex] = 0 // 橡皮擦只清 alpha
         } else {
           if (rIndex >= 0 && rIndex < data.length) {
-            data[rIndex] = this.strokeR
+            data[rIndex] = this.strokeR // 写入 R
           }
           if (gIndex >= 0 && gIndex < data.length) {
-            data[gIndex] = this.strokeG
+            data[gIndex] = this.strokeG // 写入 G
           }
           if (bIndex >= 0 && bIndex < data.length) {
-            data[bIndex] = this.strokeB
+            data[bIndex] = this.strokeB // 写入 B
           }
-          data[aIndex] = alpha
+          data[aIndex] = alpha // 写入透明度
         }
       }
     }
@@ -2509,75 +2550,32 @@ struct Index {
 
   // 直线工具：拖拽产生的起点/终点是 UI 坐标
   // 这个函数负责把 UI 坐标换成图片像素坐标，然后在绘制图层上画线
-  private async handleLineDrag(
-    startUiX: number,
-    startUiY: number,
-    endUiX: number,
-    endUiY: number
-  ): Promise<void> {
-    // 没有底图就没法画
+  // 直线工具：把 UI 拖拽的起点/终点转成像素，然后在绘制图层画线
+  private async handleLineDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
-    const pm: image.PixelMap = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
+    const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY)
+    const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY)
+    if (!p0 || !p1) {
+      return
+    }
 
-    // === UI → 像素坐标映射（和画点时完全一致） ===
-    // scaleBase 表示：在 contain 模式下，图片缩放到画布里所需的基础比例
-    const scaleBase: number = Math.min(
-      this.canvasWidth / info.size.width,
-      this.canvasHeight / info.size.height
-    )
-
-    // 图片在当前缩放状态下，实际显示在画布中的宽高
-    const realW: number = info.size.width * scaleBase * this.zoom
-    const realH: number = info.size.height * scaleBase * this.zoom
-
-    // 图片左上角在画布坐标系中的位置（考虑居中 + 平移）
-    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
-    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
-
-    // 把 UI 坐标反算成图片内部的像素坐标（浮点）
-    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
-    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
-    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
-    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
-
-    // 取整，得到最终要画线的像素坐标
-    const x0: number = Math.floor(startPxFloat)
-    const y0: number = Math.floor(startPyFloat)
-    const x1: number = Math.floor(endPxFloat)
-    const y1: number = Math.floor(endPyFloat)
-
-    // 打日志方便排查坐标映射问题
-    console.info(
-      `>>> handleLineDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
-        `uiEnd=(${endUiX.toFixed(1)},${endUiY.toFixed(1)}) -> ` +
-        `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
-    )
-
-    // 确保存在绘制图层（没有就新建）
-    // 这里不关心返回值，只要确保 drawPixelMap 已经存在
     const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
     if (!layerPm) {
       return
     }
 
-    // 真正画线的逻辑交给底层函数，只处理像素层面的事情
-    await this.drawLineBetweenPixels(x0, y0, x1, y1)
+    await this.drawLineBetweenPixels(p0.x, p0.y, p1.x, p1.y)
 
-    // === 记录操作描述（用于日志和协作同步） ===
-    // 描述只保留一个规范化后的矩形范围，方便人看
-    const left: number = Math.min(x0, x1)
-    const top: number = Math.min(y0, y1)
-    const right: number = Math.max(x0, x1)
-    const bottom: number = Math.max(y0, y1)
+    const left: number = Math.min(p0.x, p1.x)
+    const top: number = Math.min(p0.y, p1.y)
+    const right: number = Math.max(p0.x, p1.x)
+    const bottom: number = Math.max(p0.y, p1.y)
 
     const desc: string = `画了一条直线 (${left}, ${top}) -> (${right}, ${bottom})`
-
     await this.logAndSyncAfterImageChange(desc)
-
     promptAction.showToast({ message: '直线已绘制' })
   }
 
@@ -2737,65 +2735,29 @@ struct Index {
     )
   }
 
-  // 矩形工具：拖拽产生的起点/终点（UI 坐标），在这里转成像素并画矩形
-  private async handleRectDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number) {
+  // 矩形工具：把 UI 拖拽得到的起点/终点转换成像素坐标，并在绘制图层上画矩形
+  // 矩形工具：把 UI 拖拽的起点/终点转成像素，然后在绘制图层画矩形
+  private async handleRectDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
-    const pm = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
+    const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY)
+    const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY)
+    if (!p0 || !p1) {
+      return
+    }
 
-    // —— UI → 像素（和画点 / 画直线保持完全一致的映射逻辑）——
-    const scaleBase: number = Math.min(
-      this.canvasWidth / info.size.width,
-      this.canvasHeight / info.size.height
-    )
+    await this.pushFullSnapshotBeforeChange()
+    await this.drawRectBetweenPixels(p0.x, p0.y, p1.x, p1.y)
 
-    const realW: number = info.size.width * scaleBase * this.zoom
-    const realH: number = info.size.height * scaleBase * this.zoom
+    const left: number = Math.min(p0.x, p1.x)
+    const top: number = Math.min(p0.y, p1.y)
+    const right: number = Math.max(p0.x, p1.x)
+    const bottom: number = Math.max(p0.y, p1.y)
 
-    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
-    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
-
-    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
-    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
-    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
-    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
-
-    const x0: number = Math.floor(startPxFloat)
-    const y0: number = Math.floor(startPyFloat)
-    const x1: number = Math.floor(endPxFloat)
-    const y1: number = Math.floor(endPyFloat)
-
-    console.info(
-      `>>> handleRectDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
-        `uiEnd=(${endUiX.toFixed(1)},${endUiY.toFixed(1)}) -> ` +
-        `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
-    )
-
-    // 这里不强制要求完全在图内，真正的边界裁剪交给 drawRectBetweenPixels 去做
-
-    // 1）修改前先把当前整图压入撤销栈（可撤回）
-    // 1）修改前：只记录状态 + 绘制层快照（底图不动）
-    await this.pushFullSnapshotBeforeChange();
-
-    // 2）在绘制层上画矩形
-    await this.drawRectBetweenPixels(x0, y0, x1, y1)
-
-    // 3）写操作记录（带像素坐标）
-    // 归一化成左上 / 右下
-    const left: number = Math.min(x0, x1)
-    const right: number = Math.max(x0, x1)
-    const top: number = Math.min(y0, y1)
-    const bottom: number = Math.max(y0, y1)
-
-    const desc: string =
-      `画了一个矩形 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})`
-
+    const desc: string = `画了一个矩形 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})`
     await this.logAndSyncAfterImageChange(desc)
-
-
     promptAction.showToast({ message: '矩形已绘制' })
   }
 
@@ -3009,35 +2971,25 @@ struct Index {
 
   // 圆形工具：拖拽产生的起点/终点（UI 坐标），转成像素并画圆
   // 圆形工具：拖拽产生的起点/终点（UI 坐标），转成像素并画圆（绘制在 overlay）
+  // 圆形工具：把 UI 拖拽起点/终点转成像素坐标，用正方形框出一个圆并画到绘制图层
   private async handleCircleDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
+    const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY) // 起点 UI -> 像素
+    const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY) // 终点 UI -> 像素
+    if (!p0 || !p1) {
+      return
+    }
+
+    const x0: number = p0.x // 起点像素 x
+    const y0: number = p0.y // 起点像素 y
+    const x1: number = p1.x // 终点像素 x
+    const y1: number = p1.y // 终点像素 y
+
     const pm: image.PixelMap = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
-
-    // —— UI → 像素（和点 / 直线 / 矩形保持一致）——
-    const scaleBase: number = Math.min(
-      this.canvasWidth / info.size.width,
-      this.canvasHeight / info.size.height
-    )
-
-    const realW: number = info.size.width * scaleBase * this.zoom
-    const realH: number = info.size.height * scaleBase * this.zoom
-
-    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
-    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
-
-    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
-    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
-    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
-    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
-
-    const x0: number = Math.floor(startPxFloat)
-    const y0: number = Math.floor(startPyFloat)
-    const x1: number = Math.floor(endPxFloat)
-    const y1: number = Math.floor(endPyFloat)
+    const info: image.ImageInfo = await pm.getImageInfo() // 仅用于打印尺寸日志
 
     console.info(
       `>>> handleCircleDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
@@ -3045,71 +2997,53 @@ struct Index {
         `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
     )
 
-    // 1）先求出拖出矩形的左/右/上/下
-    let left: number = Math.min(x0, x1)
-    let right: number = Math.max(x0, x1)
-    let top: number = Math.min(y0, y1)
-    let bottom: number = Math.max(y0, y1)
+    let left: number = Math.min(x0, x1) // 拖拽矩形左边
+    let right: number = Math.max(x0, x1) // 拖拽矩形右边
+    let top: number = Math.min(y0, y1) // 拖拽矩形上边
+    let bottom: number = Math.max(y0, y1) // 拖拽矩形下边
 
-    const boxW: number = right - left
-    const boxH: number = bottom - top
-    const side: number = Math.min(Math.abs(boxW), Math.abs(boxH))
+    const boxW: number = right - left // 拖拽宽
+    const boxH: number = bottom - top // 拖拽高
+    const side: number = Math.min(Math.abs(boxW), Math.abs(boxH)) // 取短边做圆的边长
 
     if (side <= 0) {
       console.info('>>> handleCircleDrag: side too small, skip')
       return
     }
 
-    // 用左上角 + side 构造一个正方形区域
-    right = left + side
-    bottom = top + side
+    right = left + side // 用左上角 + side 构造正方形
+    bottom = top + side // 用左上角 + side 构造正方形
 
-    // 2）修改前压入撤销栈：只记录状态 + 绘制层快照（底图不动）
-    await this.pushFullSnapshotBeforeChange();
+    await this.pushFullSnapshotBeforeChange() // 画之前压快照，支持撤销
+    await this.drawCircleBetweenPixels(left, top, right, bottom) // 在绘制图层上画圆
 
-    // 3）真正画圆（在绘制图层上）
-    await this.drawCircleBetweenPixels(left, top, right, bottom)
-
-
-    // 4）写操作记录
-    const desc: string =
-      `画了一个圆 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})`
-
-    await this.logAndSyncAfterImageChange(desc)
+    const desc: string = `画了一个圆 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})` // 操作描述
+    await this.logAndSyncAfterImageChange(desc) // 写日志并同步协作端
 
     promptAction.showToast({ message: '圆形已绘制' })
   }
 
   // 椭圆工具：拖拽产生的起点/终点（UI 坐标），转成像素并画椭圆
   // 椭圆工具：拖拽产生的起点/终点（UI 坐标），转成像素并在绘制图层上画椭圆
+  // 椭圆工具：把 UI 拖拽起点/终点转成像素坐标，用矩形框出一个椭圆并画到绘制图层
   private async handleEllipseDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
     if (!this.pixelMap) {
       return
     }
 
+    const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY) // 起点 UI -> 像素
+    const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY) // 终点 UI -> 像素
+    if (!p0 || !p1) {
+      return
+    }
+
+    const x0: number = p0.x // 起点像素 x
+    const y0: number = p0.y // 起点像素 y
+    const x1: number = p1.x // 终点像素 x
+    const y1: number = p1.y // 终点像素 y
+
     const pm: image.PixelMap = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo()
-
-    const scaleBase: number = Math.min(
-      this.canvasWidth / info.size.width,
-      this.canvasHeight / info.size.height
-    )
-
-    const realW: number = info.size.width * scaleBase * this.zoom
-    const realH: number = info.size.height * scaleBase * this.zoom
-
-    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
-    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
-
-    const startPxFloat: number = (startUiX - imageLeft) * (info.size.width / realW)
-    const startPyFloat: number = (startUiY - imageTop) * (info.size.height / realH)
-    const endPxFloat: number = (endUiX - imageLeft) * (info.size.width / realW)
-    const endPyFloat: number = (endUiY - imageTop) * (info.size.height / realH)
-
-    const x0: number = Math.floor(startPxFloat)
-    const y0: number = Math.floor(startPyFloat)
-    const x1: number = Math.floor(endPxFloat)
-    const y1: number = Math.floor(endPyFloat)
+    const info: image.ImageInfo = await pm.getImageInfo() // 仅用于打印尺寸日志
 
     console.info(
       `>>> handleEllipseDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
@@ -3117,27 +3051,21 @@ struct Index {
         `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
     )
 
-    let left: number = Math.min(x0, x1)
-    let right: number = Math.max(x0, x1)
-    let top: number = Math.min(y0, y1)
-    let bottom: number = Math.max(y0, y1)
+    const left: number = Math.min(x0, x1) // 矩形左边
+    const right: number = Math.max(x0, x1) // 矩形右边
+    const top: number = Math.min(y0, y1) // 矩形上边
+    const bottom: number = Math.max(y0, y1) // 矩形下边
 
     if (right - left <= 0 || bottom - top <= 0) {
       console.info('>>> handleEllipseDrag: rect too small, skip')
       return
     }
 
-    // 1）修改前压入撤销栈：只记录状态 + 绘制层快照（底图不动）
-    await this.pushFullSnapshotBeforeChange();
+    await this.pushFullSnapshotBeforeChange() // 画之前压快照，支持撤销
+    await this.drawEllipseBetweenPixels(left, top, right, bottom) // 在绘制图层上画椭圆
 
-    // 2）真正在绘制图层里画椭圆
-    await this.drawEllipseBetweenPixels(left, top, right, bottom)
-
-    // 3）写操作记录
-    const desc: string =
-      `画了一个椭圆 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})`
-
-    await this.logAndSyncAfterImageChange(desc)
+    const desc: string = `画了一个椭圆 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})` // 操作描述
+    await this.logAndSyncAfterImageChange(desc) // 写日志并同步协作端
 
     promptAction.showToast({ message: '椭圆已绘制' })
   }
