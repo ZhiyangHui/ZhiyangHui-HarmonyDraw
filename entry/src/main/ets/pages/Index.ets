@@ -2548,34 +2548,46 @@ struct Index {
     }
   }
 
-  // 直线工具：拖拽产生的起点/终点是 UI 坐标
-  // 这个函数负责把 UI 坐标换成图片像素坐标，然后在绘制图层上画线
-  // 直线工具：把 UI 拖拽的起点/终点转成像素，然后在绘制图层画线
-  private async handleLineDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
+  // 直线工具：把 UI 拖拽产生的起点/终点坐标，转换成图片像素坐标，并在绘制图层上画一条直线
+  private async handleLineDrag(
+    startUiX: number,
+    startUiY: number,
+    endUiX: number,
+    endUiY: number
+  ): Promise<void> {
     if (!this.pixelMap) {
-      return
+      return // 没有底图，无法绘制
     }
 
+    // 将起点 UI 坐标转换为图片像素坐标
     const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY)
+    // 将终点 UI 坐标转换为图片像素坐标
     const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY)
     if (!p0 || !p1) {
-      return
+      return // 坐标转换失败（如越界），直接退出
     }
 
+    // 确保存在绘制图层（没有则创建）
     const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
     if (!layerPm) {
-      return
+      return // 无法获得绘制图层
     }
 
+    // 在绘制图层上，根据像素坐标真正画直线
     await this.drawLineBetweenPixels(p0.x, p0.y, p1.x, p1.y)
 
+    // 统一成左上角 / 右下角坐标，方便日志与同步
     const left: number = Math.min(p0.x, p1.x)
     const top: number = Math.min(p0.y, p1.y)
     const right: number = Math.max(p0.x, p1.x)
     const bottom: number = Math.max(p0.y, p1.y)
 
+    // 生成一条人可读的操作描述
     const desc: string = `画了一条直线 (${left}, ${top}) -> (${right}, ${bottom})`
+    // 记录操作并同步给协作端
     await this.logAndSyncAfterImageChange(desc)
+
+    // 给用户一个完成提示
     promptAction.showToast({ message: '直线已绘制' })
   }
 
@@ -2735,29 +2747,43 @@ struct Index {
     )
   }
 
-  // 矩形工具：把 UI 拖拽得到的起点/终点转换成像素坐标，并在绘制图层上画矩形
-  // 矩形工具：把 UI 拖拽的起点/终点转成像素，然后在绘制图层画矩形
-  private async handleRectDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
+  // 矩形工具：把 UI 拖拽的起点/终点转换成图片像素坐标，并在绘制图层上画一个矩形
+  private async handleRectDrag(
+    startUiX: number,
+    startUiY: number,
+    endUiX: number,
+    endUiY: number
+  ): Promise<void> {
     if (!this.pixelMap) {
-      return
+      return // 没有底图，无法绘制
     }
 
+    // 将起点 UI 坐标转换为图片像素坐标
     const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY)
+    // 将终点 UI 坐标转换为图片像素坐标
     const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY)
     if (!p0 || !p1) {
-      return
+      return // 坐标转换失败（如越界），直接退出
     }
 
+    // 修改前先压一份完整快照，支持撤销
     await this.pushFullSnapshotBeforeChange()
+
+    // 在绘制图层上按像素坐标画矩形
     await this.drawRectBetweenPixels(p0.x, p0.y, p1.x, p1.y)
 
+    // 统一成左上角 / 右下角坐标，方便记录和同步
     const left: number = Math.min(p0.x, p1.x)
     const top: number = Math.min(p0.y, p1.y)
     const right: number = Math.max(p0.x, p1.x)
     const bottom: number = Math.max(p0.y, p1.y)
 
+    // 生成一条可读的操作描述
     const desc: string = `画了一个矩形 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})`
+    // 记录操作并同步给协作端
     await this.logAndSyncAfterImageChange(desc)
+
+    // 提示用户绘制完成
     promptAction.showToast({ message: '矩形已绘制' })
   }
 
@@ -2859,15 +2885,13 @@ struct Index {
     console.info(`>>> drawRectBetweenPixels: rect drawn, drawPixelVersion=${this.drawPixelVersion}`)
   }
 
-  // 在像素坐标里画一个圆形边框（使用当前 stroke 宽度和颜色）
-  // 这里传入的是圆的外接正方形的左上 / 右下
-  // 这里传入的是圆的外接正方形的左上 / 右下，在“绘制图层”上画圆
+  // 在像素坐标系中画一个圆形边框：参数是圆的外接正方形左上 / 右下，实际绘制在绘制图层上
   private async drawCircleBetweenPixels(left: number, top: number, right: number, bottom: number): Promise<void> {
     if (!this.pixelMap) {
-      return
+      return // 没有底图直接退出
     }
 
-    // 用底图做一次边界裁剪（尺寸与绘制层一致）
+    // 用底图尺寸做一次边界裁剪，避免越界
     const basePm: image.PixelMap = this.pixelMap as image.PixelMap
     const baseInfo: image.ImageInfo = await basePm.getImageInfo()
     const baseW: number = baseInfo.size.width
@@ -2878,24 +2902,23 @@ struct Index {
     top = Math.max(0, top)
     bottom = Math.min(baseH - 1, bottom)
 
-    const w: number = right - left
-    const h: number = bottom - top
-    const side: number = Math.min(w, h)
+    const w: number = right - left // 外接矩形宽
+    const h: number = bottom - top // 外接矩形高
+    const side: number = Math.min(w, h) // 取短边作为圆的直径
 
     if (side <= 0) {
-      console.info('>>> drawCircleBetweenPixels: side too small, skip')
-      return
+      return // 框太小，不画
     }
 
-    // 用正方形包住圆
+    // 强制用正方形框住圆
     right = left + side
     bottom = top + side
 
-    const cx: number = Math.round((left + right) / 2)
-    const cy: number = Math.round((top + bottom) / 2)
-    const radius: number = side / 2
+    const cx: number = Math.round((left + right) / 2) // 圆心 x
+    const cy: number = Math.round((top + bottom) / 2) // 圆心 y
+    const radius: number = side / 2 // 圆半径
 
-    // ② 在绘制图层上画圆
+    // 确保存在绘制图层，只在绘制层上改像素
     const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
     if (!layerPm) {
       return
@@ -2905,12 +2928,13 @@ struct Index {
     const width: number = info.size.width
     const height: number = info.size.height
 
-    // 1）读绘制层像素
+    // 把绘制层像素一次性读到内存 buffer
     const byteLength: number = layerPm.getPixelBytesNumber()
     const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
     await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
+    // 根据像素格式拿到通道偏移和 bpp
     const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
     const rOffset: number = ch.r
     const gOffset: number = ch.g
@@ -2918,10 +2942,10 @@ struct Index {
     const aOffset: number = ch.a
     const bpp: number = ch.bytesPerPixel
 
-    const strokeRadius: number = this.computeStrokeRadiusPixel(width, height)
+    const strokeRadius: number = this.computeStrokeRadiusPixel(width, height) // 线宽对应的像素半径
+    const alpha: number = this.getStrokeAlpha() // 当前画笔透明度
 
-    const alpha: number = this.getStrokeAlpha()
-
+    // 在指定像素位置画一个“粗点”，作为画圆边的基础
     const drawThickPoint = (px: number, py: number): void => {
       this.drawThickPointIntoBuffer(
         data,
@@ -2939,10 +2963,9 @@ struct Index {
       )
     }
 
-    // 3）用参数方程画一圈：x = cx + r cos t, y = cy + r sin t
+    // 用参数方程沿圆周走一圈，逐点画粗点
     const TWO_PI: number = Math.PI * 2
-    // 步数与半径成比例，保证越大越平滑
-    const steps: number = Math.max(36, Math.floor(TWO_PI * radius / 2))
+    const steps: number = Math.max(36, Math.floor(TWO_PI * radius / 2)) // 半径越大，步数越多
 
     for (let i: number = 0; i < steps; i++) {
       const t: number = (TWO_PI * i) / steps
@@ -2950,37 +2973,38 @@ struct Index {
       const py: number = Math.round(cy + radius * Math.sin(t))
 
       if (px < 0 || px >= width || py < 0 || py >= height) {
-        continue
+        continue // 越界像素直接跳过
       }
       drawThickPoint(px, py)
     }
 
-    // 4）写回绘制层像素
+    // 把修改后的像素写回绘制层
     await layerPm.writeBufferToPixels(buffer)
 
-    // 5）clone 一份新的绘制层，触发 UI 刷新
+    // clone 新 PixelMap，替换引用以触发 UI 刷新
     const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
     if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
       this.drawPixelMap.release?.()
     }
     this.drawPixelMap = newLayer
-    this.drawPixelVersion++ // 叠加层 Image 重新渲染
-
-    console.info(`>>> drawCircleBetweenPixels: circle drawn, drawPixelVersion=${this.drawPixelVersion}`)
+    this.drawPixelVersion++ // 驱动叠加层重新渲染
   }
 
-  // 圆形工具：拖拽产生的起点/终点（UI 坐标），转成像素并画圆
-  // 圆形工具：拖拽产生的起点/终点（UI 坐标），转成像素并画圆（绘制在 overlay）
-  // 圆形工具：把 UI 拖拽起点/终点转成像素坐标，用正方形框出一个圆并画到绘制图层
-  private async handleCircleDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
+  // 圆形工具：把 UI 拖拽的起点/终点转换成像素坐标，用正方形框出一个圆并画到绘制图层
+  private async handleCircleDrag(
+    startUiX: number,
+    startUiY: number,
+    endUiX: number,
+    endUiY: number
+  ): Promise<void> {
     if (!this.pixelMap) {
-      return
+      return // 没有底图，无法绘制
     }
 
-    const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY) // 起点 UI -> 像素
-    const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY) // 终点 UI -> 像素
+    const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY) // 起点 UI → 像素
+    const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY) // 终点 UI → 像素
     if (!p0 || !p1) {
-      return
+      return // 坐标转换失败直接退出
     }
 
     const x0: number = p0.x // 起点像素 x
@@ -2989,7 +3013,7 @@ struct Index {
     const y1: number = p1.y // 终点像素 y
 
     const pm: image.PixelMap = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo() // 仅用于打印尺寸日志
+    const info: image.ImageInfo = await pm.getImageInfo() // 仅用于调试日志
 
     console.info(
       `>>> handleCircleDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
@@ -2997,44 +3021,46 @@ struct Index {
         `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
     )
 
-    let left: number = Math.min(x0, x1) // 拖拽矩形左边
-    let right: number = Math.max(x0, x1) // 拖拽矩形右边
-    let top: number = Math.min(y0, y1) // 拖拽矩形上边
-    let bottom: number = Math.max(y0, y1) // 拖拽矩形下边
+    let left: number = Math.min(x0, x1) // 拖拽框左边
+    let right: number = Math.max(x0, x1) // 拖拽框右边
+    let top: number = Math.min(y0, y1) // 拖拽框上边
+    let bottom: number = Math.max(y0, y1) // 拖拽框下边
 
-    const boxW: number = right - left // 拖拽宽
-    const boxH: number = bottom - top // 拖拽高
-    const side: number = Math.min(Math.abs(boxW), Math.abs(boxH)) // 取短边做圆的边长
+    const boxW: number = right - left // 拖拽框宽度
+    const boxH: number = bottom - top // 拖拽框高度
+    const side: number = Math.min(Math.abs(boxW), Math.abs(boxH)) // 取短边作为圆的直径
 
     if (side <= 0) {
-      console.info('>>> handleCircleDrag: side too small, skip')
-      return
+      return // 框太小，不画
     }
 
-    right = left + side // 用左上角 + side 构造正方形
-    bottom = top + side // 用左上角 + side 构造正方形
+    right = left + side // 用左上角 + side 构成正方形
+    bottom = top + side // 保证画出来的是正圆
 
-    await this.pushFullSnapshotBeforeChange() // 画之前压快照，支持撤销
+    await this.pushFullSnapshotBeforeChange() // 绘制前压快照，支持撤销
     await this.drawCircleBetweenPixels(left, top, right, bottom) // 在绘制图层上画圆
 
     const desc: string = `画了一个圆 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})` // 操作描述
-    await this.logAndSyncAfterImageChange(desc) // 写日志并同步协作端
+    await this.logAndSyncAfterImageChange(desc) // 记录日志并同步协作端
 
-    promptAction.showToast({ message: '圆形已绘制' })
+    promptAction.showToast({ message: '圆形已绘制' }) // 提示用户完成
   }
 
-  // 椭圆工具：拖拽产生的起点/终点（UI 坐标），转成像素并画椭圆
-  // 椭圆工具：拖拽产生的起点/终点（UI 坐标），转成像素并在绘制图层上画椭圆
-  // 椭圆工具：把 UI 拖拽起点/终点转成像素坐标，用矩形框出一个椭圆并画到绘制图层
-  private async handleEllipseDrag(startUiX: number, startUiY: number, endUiX: number, endUiY: number): Promise<void> {
+  // 椭圆工具：把 UI 拖拽的起点/终点转换成像素坐标，用矩形框出一个椭圆并画到绘制图层
+  private async handleEllipseDrag(
+    startUiX: number,
+    startUiY: number,
+    endUiX: number,
+    endUiY: number
+  ): Promise<void> {
     if (!this.pixelMap) {
-      return
+      return // 没有底图就不处理
     }
 
-    const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY) // 起点 UI -> 像素
-    const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY) // 终点 UI -> 像素
+    const p0: PixelPoint | undefined = await this.uiToPixel(startUiX, startUiY) // 起点 UI → 像素
+    const p1: PixelPoint | undefined = await this.uiToPixel(endUiX, endUiY) // 终点 UI → 像素
     if (!p0 || !p1) {
-      return
+      return // 坐标转换失败直接退出
     }
 
     const x0: number = p0.x // 起点像素 x
@@ -3043,7 +3069,7 @@ struct Index {
     const y1: number = p1.y // 终点像素 y
 
     const pm: image.PixelMap = this.pixelMap as image.PixelMap
-    const info: image.ImageInfo = await pm.getImageInfo() // 仅用于打印尺寸日志
+    const info: image.ImageInfo = await pm.getImageInfo() // 仅用于调试日志
 
     console.info(
       `>>> handleEllipseDrag uiStart=(${startUiX.toFixed(1)},${startUiY.toFixed(1)}), ` +
@@ -3051,35 +3077,31 @@ struct Index {
         `pixelStart=(${x0},${y0}), pixelEnd=(${x1},${y1}), imgSize=(${info.size.width},${info.size.height})`
     )
 
-    const left: number = Math.min(x0, x1) // 矩形左边
-    const right: number = Math.max(x0, x1) // 矩形右边
-    const top: number = Math.min(y0, y1) // 矩形上边
-    const bottom: number = Math.max(y0, y1) // 矩形下边
+    const left: number = Math.min(x0, x1) // 椭圆外接矩形左边
+    const right: number = Math.max(x0, x1) // 椭圆外接矩形右边
+    const top: number = Math.min(y0, y1) // 椭圆外接矩形上边
+    const bottom: number = Math.max(y0, y1) // 椭圆外接矩形下边
 
     if (right - left <= 0 || bottom - top <= 0) {
-      console.info('>>> handleEllipseDrag: rect too small, skip')
-      return
+      return // 框太小，不画
     }
 
-    await this.pushFullSnapshotBeforeChange() // 画之前压快照，支持撤销
+    await this.pushFullSnapshotBeforeChange() // 绘制前压快照，支持撤销
     await this.drawEllipseBetweenPixels(left, top, right, bottom) // 在绘制图层上画椭圆
 
     const desc: string = `画了一个椭圆 左上像素=(${left}, ${top}), 右下像素=(${right}, ${bottom})` // 操作描述
-    await this.logAndSyncAfterImageChange(desc) // 写日志并同步协作端
+    await this.logAndSyncAfterImageChange(desc) // 记录操作并同步协作端
 
-    promptAction.showToast({ message: '椭圆已绘制' })
+    promptAction.showToast({ message: '椭圆已绘制' }) // 提示用户完成
   }
 
-  // 在像素坐标里画一个椭圆边框（使用当前 stroke 宽度和颜色）
-  // 传入的是椭圆外接矩形左上 / 右下
-  // 在像素坐标里画一个椭圆边框（使用当前 stroke 宽度和颜色）
-  // 传入的是椭圆外接矩形左上 / 右下，实际绘制在 drawPixelMap 上
+  // 在像素坐标系中画一个椭圆边框，参数是椭圆外接矩形的左上 / 右下，实际绘制在绘制图层上
   private async drawEllipseBetweenPixels(left: number, top: number, right: number, bottom: number): Promise<void> {
     if (!this.pixelMap) {
-      return
+      return // 没有底图就不处理
     }
 
-    // 先用底图做一次边界裁剪（尺寸与绘制层一致）
+    // 用底图尺寸对传入的矩形做一次裁剪，防止越界
     const basePm: image.PixelMap = this.pixelMap as image.PixelMap
     const baseInfo: image.ImageInfo = await basePm.getImageInfo()
     const baseW: number = baseInfo.size.width
@@ -3090,20 +3112,18 @@ struct Index {
     top = Math.max(0, top)
     bottom = Math.min(baseH - 1, bottom)
 
-    const w: number = right - left
-    const h: number = bottom - top
-
+    const w: number = right - left // 外接矩形宽
+    const h: number = bottom - top // 外接矩形高
     if (w <= 0 || h <= 0) {
-      console.info('>>> drawEllipseBetweenPixels: rect too small, skip')
-      return
+      return // 矩形无效，直接退出
     }
 
-    const cx: number = Math.round((left + right) / 2)
-    const cy: number = Math.round((top + bottom) / 2)
-    const rx: number = w / 2
-    const ry: number = h / 2
+    const cx: number = Math.round((left + right) / 2) // 椭圆中心 x
+    const cy: number = Math.round((top + bottom) / 2) // 椭圆中心 y
+    const rx: number = w / 2 // 椭圆 x 方向半径
+    const ry: number = h / 2 // 椭圆 y 方向半径
 
-    // ② 在绘制图层上画椭圆
+    // 确保存在绘制图层，只在绘制层上画
     const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
     if (!layerPm) {
       return
@@ -3113,22 +3133,24 @@ struct Index {
     const width: number = info.size.width
     const height: number = info.size.height
 
-    // 1）读绘制层像素
+    // 把绘制层像素整体读到内存里，后面直接改 buffer
     const byteLength: number = layerPm.getPixelBytesNumber()
     const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
     await layerPm.readPixelsToBuffer(buffer)
     const data: Uint8Array = new Uint8Array(buffer)
 
+    // 根据像素格式获取通道偏移和每像素字节数
     const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
     const rOffset: number = ch.r
     const gOffset: number = ch.g
     const bOffset: number = ch.b
     const aOffset: number = ch.a
-    const bpp: number = ch.bytesPerPixel // 一像素占多少字节（一般是4）
+    const bpp: number = ch.bytesPerPixel // 一个像素占多少字节
 
-    const thickRadius: number = this.computeStrokeRadiusPixel(width, height)
-    const alpha: number = this.getStrokeAlpha()
+    const thickRadius: number = this.computeStrokeRadiusPixel(width, height) // 线宽对应的像素半径
+    const alpha: number = this.getStrokeAlpha() // 当前画笔透明度
 
+    // 在指定像素点画一个“粗点”，椭圆边是由这些点拼出来的
     const drawThickPoint = (px: number, py: number): void => {
       this.drawThickPointIntoBuffer(
         data,
@@ -3146,76 +3168,77 @@ struct Index {
       )
     }
 
-    // 3）参数方程椭圆：x = cx + rx cos t, y = cy + ry sin t
+    // 用参数方程沿椭圆边走一圈
     const TWO_PI: number = Math.PI * 2
     const maxR: number = Math.max(rx, ry)
-    const steps: number = Math.max(36, Math.floor(TWO_PI * maxR / 2))
+    const steps: number = Math.max(36, Math.floor(TWO_PI * maxR / 2)) // 椭圆越大，步数越多
 
     for (let i: number = 0; i < steps; i++) {
       const t: number = (TWO_PI * i) / steps
-      const px: number = Math.round(cx + rx * Math.cos(t))
-      const py: number = Math.round(cy + ry * Math.sin(t))
+      const px: number = Math.round(cx + rx * Math.cos(t)) // 当前点 x
+      const py: number = Math.round(cy + ry * Math.sin(t)) // 当前点 y
 
       if (px < 0 || px >= width || py < 0 || py >= height) {
-        continue
+        continue // 越界像素跳过
       }
       drawThickPoint(px, py)
     }
 
-    // 4）写回绘制层像素
+    // 把修改后的像素数据写回绘制图层
     await layerPm.writeBufferToPixels(buffer)
 
-    // 5）clone 一张新的绘制层触发刷新
+    // clone 一份新的 PixelMap，替换引用以触发 UI 刷新
     const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
     if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
       this.drawPixelMap.release?.()
     }
     this.drawPixelMap = newLayer
-    this.drawPixelVersion++
-
-    console.info(`>>> drawEllipseBetweenPixels: ellipse drawn, drawPixelVersion=${this.drawPixelVersion}`)
+    this.drawPixelVersion++ // 驱动叠加层重新渲染
   }
 
-  // 在自由绘制时，每一小段手势移动，实时画到内存 buffer 里（同步）
+  // 在自由绘制时，把一小段手势移动同步画进内存里的像素 buffer（不涉及 PixelMap 写回）
   private drawFreeStrokeSegmentSync(
     prevUiX: number,
     prevUiY: number,
     curUiX: number,
     curUiY: number
   ): void {
-    // 这里要求：已经在手势开始的时候初始化好 freeDrawArrayBuffer / freeDrawBuffer，
-    // 且它是基于 “绘制层 drawPixelMap（如果有）或者底图 pixelMap” 的像素数据。
+    // 自由绘制开始时必须已经准备好内存 buffer，否则直接跳过
     if (!this.freeDrawBuffer || !this.freeDrawArrayBuffer) {
       return
     }
+
+    // 没有底图也没有绘制层，说明当前没有可画的目标
     if (!this.pixelMap && !this.drawPixelMap) {
       return
     }
 
-    // ✅ 优先使用绘制层的尺寸 / 像素格式
+    // 优先用绘制层作为参考尺寸，其次才用底图
     const basePm: image.PixelMap = (this.drawPixelMap ?? this.pixelMap) as image.PixelMap
-    const info: image.ImageInfo = basePm.getImageInfoSync()
+    const info: image.ImageInfo = basePm.getImageInfoSync() // 同步拿尺寸和像素格式
 
-    const imgW: number = info.size.width
-    const imgH: number = info.size.height
+    const imgW: number = info.size.width // 图片像素宽
+    const imgH: number = info.size.height // 图片像素高
 
-    // —— UI → 像素映射，逻辑跟你之前完全一样 ——
+    // 根据画布尺寸和图片尺寸，计算 contain 模式下的基础缩放比例
     const scaleBase: number = Math.min(
       this.canvasWidth / imgW,
       this.canvasHeight / imgH
     )
-    const realW: number = imgW * scaleBase * this.zoom
-    const realH: number = imgH * scaleBase * this.zoom
 
-    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
-    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
+    const realW: number = imgW * scaleBase * this.zoom // 当前图片在画布上的显示宽
+    const realH: number = imgH * scaleBase * this.zoom // 当前图片在画布上的显示高
 
+    const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX // 图片左上角 x
+    const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY // 图片左上角 y
+
+    // 把上一帧和当前帧的 UI 坐标转换成图片像素坐标
     const x0: number = Math.floor((prevUiX - imageLeft) * (imgW / realW))
     const y0: number = Math.floor((prevUiY - imageTop) * (imgH / realH))
     const x1: number = Math.floor((curUiX - imageLeft) * (imgW / realW))
     const y1: number = Math.floor((curUiY - imageTop) * (imgH / realH))
 
-    // 越界直接丢弃这段
+    // 任一端点越界就直接丢弃这一小段，避免写坏 buffer
     if (
       x0 < 0 || x0 >= imgW || y0 < 0 || y0 >= imgH ||
         x1 < 0 || x1 >= imgW || y1 < 0 || y1 >= imgH
@@ -3223,21 +3246,20 @@ struct Index {
       return
     }
 
-    // ⭐ 真正画到 freeDrawBuffer（同步、不 await）
+    // 在内存 buffer 里同步画一小段线，用于自由绘制的实时反馈
     this.drawLineIntoBuffer(
       x0,
       y0,
       x1,
       y1,
-      this.freeDrawBuffer as Uint8Array,
+      this.freeDrawBuffer as Uint8Array, // 当前自由绘制用的像素缓冲区
       imgW,
       imgH,
-      info.pixelFormat
+      info.pixelFormat // 像素格式决定通道顺序和 bpp
     )
   }
 
-  // 在给定的像素缓冲区里画一条“带粗细的线段”（自由画专用，完全同步）
-  // x0,y0,x1,y1 是像素坐标；buffer 是整张图的 BGRA/ARGB/RGBA 像素数据
+  // 在给定的像素缓冲区里画一条“带粗细的线段”（用于自由绘制，直接改内存，不走 PixelMap）
   private drawLineIntoBuffer(
     x0: number,
     y0: number,
@@ -3248,27 +3270,28 @@ struct Index {
     imgH: number,
     pixelFormat: image.PixelMapFormat
   ): void {
-    const width: number = imgW
-    const height: number = imgH
+    const width: number = imgW // 图片像素宽
+    const height: number = imgH // 图片像素高
 
-    const ch: ChannelOrder = this.getChannelOrder(pixelFormat)
-    const rOffset: number = ch.r
-    const gOffset: number = ch.g
-    const bOffset: number = ch.b
-    const aOffset: number = ch.a
-    const bpp: number = ch.bytesPerPixel
+    const ch: ChannelOrder = this.getChannelOrder(pixelFormat) // 根据像素格式确定通道顺序
+    const rOffset: number = ch.r // R 通道在一个像素里的偏移
+    const gOffset: number = ch.g // G 通道偏移
+    const bOffset: number = ch.b // B 通道偏移
+    const aOffset: number = ch.a // A 通道偏移
+    const bpp: number = ch.bytesPerPixel // 每个像素占用的字节数
 
-    const radius: number = this.computeStrokeRadiusPixel(imgW, imgH)
-    const alpha: number = this.getStrokeAlpha()
+    const radius: number = this.computeStrokeRadiusPixel(imgW, imgH) // 当前画笔在像素级的半径
+    const alpha: number = this.getStrokeAlpha() // 当前画笔透明度
 
+    // 在指定像素位置画一个“粗点”，用于拼出粗线
     const drawThickPoint = (px: number, py: number): void => {
       this.drawThickPointIntoBuffer(
-        buffer, // 这里用 buffer，不是 data
+        buffer, // 直接操作传入的像素缓冲区
         width,
         height,
         px,
         py,
-        radius, // 这里用 radius，不是 thickRadius
+        radius, // 使用当前画笔半径
         rOffset,
         gOffset,
         bOffset,
@@ -3278,65 +3301,67 @@ struct Index {
       )
     }
 
-    let curX: number = x0
-    let curY: number = y0
-    const dx: number = Math.abs(x1 - x0)
-    const sx: number = x0 < x1 ? 1 : -1
-    const dy: number = -Math.abs(y1 - y0)
-    const sy: number = y0 < y1 ? 1 : -1
-    let err: number = dx + dy
+    let curX: number = x0 // 当前走到的像素 x
+    let curY: number = y0 // 当前走到的像素 y
+    const dx: number = Math.abs(x1 - x0) // x 方向总步数
+    const sx: number = x0 < x1 ? 1 : -1 // x 方向每步走向
+    const dy: number = -Math.abs(y1 - y0) // y 方向总步数（算法要求为负）
+    const sy: number = y0 < y1 ? 1 : -1 // y 方向每步走向
+    let err: number = dx + dy // Bresenham 误差项
 
     while (true) {
-      drawThickPoint(curX, curY)
+      drawThickPoint(curX, curY) // 在当前像素位置画一个粗点
 
       if (curX === x1 && curY === y1) {
-        break
+        break // 到达终点就结束
       }
 
-      const e2: number = 2 * err
+      const e2: number = 2 * err // 放大误差，用来判断走向
       if (e2 >= dy) {
         err += dy
-        curX += sx
+        curX += sx // 在 x 方向前进一步
       }
       if (e2 <= dx) {
         err += dx
-        curY += sy
+        curY += sy // 在 y 方向前进一步
       }
     }
   }
 
+  // 为自由绘制准备一份可直接修改的像素缓冲区（从绘制图层拷贝）
   private async prepareFreeDrawBuffer() {
     if (!this.pixelMap) {
-      return
+      return // 没有底图，直接返回
     }
 
-    // ✅ 自由绘制只针对绘制层，如果还没有绘制层，先创建一张全透明的
+    // 自由绘制只作用在绘制图层上，没有就先创建一张全透明的绘制层
     const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
     if (!layerPm) {
-      return
+      return // 创建或获取绘制层失败
     }
 
-    this.freeBufferReady = false
+    this.freeBufferReady = false // 标记缓冲区尚未准备好
 
-    this.freeDrawByteLength = layerPm.getPixelBytesNumber()
-    this.freeDrawArrayBuffer = new ArrayBuffer(this.freeDrawByteLength)
+    this.freeDrawByteLength = layerPm.getPixelBytesNumber() // 计算绘制层所需的字节大小
+    this.freeDrawArrayBuffer = new ArrayBuffer(this.freeDrawByteLength) // 分配一块连续内存
 
-    // 异步读取绘制层像素（不能在手势里 await）
+    // 异步把绘制层像素读到内存里，避免在手势回调中 await
     layerPm.readPixelsToBuffer(this.freeDrawArrayBuffer).then(() => {
-      this.freeDrawBuffer = new Uint8Array(this.freeDrawArrayBuffer as ArrayBuffer)
-      this.freeBufferReady = true
+      this.freeDrawBuffer = new Uint8Array(this.freeDrawArrayBuffer as ArrayBuffer) // 用 Uint8Array 方便直接改像素
+      this.freeBufferReady = true // 标记缓冲区已可用于自由绘制
     })
   }
 
+  // 自由绘制结束时调用：把内存里的绘制结果真正提交到绘制图层
   private async handleFreeDrawEnd(): Promise<void> {
-    // 只在 FreeDraw 模式下结束自由绘制
+    // 只在自由绘制模式下才处理，且必须已经有图片
     if (this.currentShape !== ShapeTool.FreeDraw || !this.pixelMap) {
       return
     }
 
-    this.isFreeDrawing = false
+    this.isFreeDrawing = false // 标记自由绘制状态结束
 
-    // ✅ 自由绘制作用于绘制层，如果没有则直接返回
+    // 自由绘制只作用在绘制图层上，没有绘制层就直接清理并退出
     const layerPm: image.PixelMap | undefined = await this.ensureDrawLayer()
     if (!layerPm) {
       this.freeDrawBuffer = null
@@ -3344,64 +3369,57 @@ struct Index {
       return
     }
 
-    // 1) 把最终的内存 buffer 写回绘制层 pixelMap
+    // 1) 把内存里的最终像素数据写回到绘制图层 PixelMap
     if (this.freeDrawArrayBuffer) {
       await layerPm.writeBufferToPixels(this.freeDrawArrayBuffer)
     }
 
-    // 2) clone 一份新的绘制层 —— 触发 UI 刷新（与其它图形绘制逻辑保持一致）
+    // 2) clone 一份新的绘制图层，替换引用，强制触发 UI 刷新
     const newLayer: image.PixelMap = await this.clonePixelMap(layerPm)
-
     if (this.drawPixelMap && this.drawPixelMap !== newLayer) {
       this.drawPixelMap.release?.()
     }
     this.drawPixelMap = newLayer
-    this.drawPixelVersion++ // Image(drawPixelMap) 会刷新
+    this.drawPixelVersion++ // 驱动叠加层 Image 重新渲染
 
-    // 3) 清空缓存
+    // 3) 清空自由绘制过程中使用的临时缓冲区
     this.freeDrawBuffer = null
     this.freeDrawArrayBuffer = null
 
-    // ⭐ 新增 ②：写一条操作记录 + 做协作同步
+    // 4) 记录一次“自由绘制完成”的操作，并同步给协作端
     const desc: string = '自由画笔：完成了一笔自由绘制'
     await this.logAndSyncAfterImageChange(desc)
   }
 
-  // 根据当前画笔透明度 strokeOpacity（0.0~1.0）计算对应的 alpha（0~255）
-  // 当前画笔的 alpha（0~255）
+  // 根据当前画笔透明度 strokeOpacity（0.0 ~ 1.0），计算实际写入像素用的 alpha 值（0 ~ 255）
   private getStrokeAlpha(): number {
-    // 以后如果要做橡皮擦 = 抹透明，可以在这里 special case
-    if (this.currentBrush === BrushTool.Eraser) {
-      // 暂时先留着 255，不做“抹透明”逻辑，后面我们单独处理橡皮擦
-      // return 0
-    }
-
+    // 把 0.0 ~ 1.0 的透明度映射到 0 ~ 255 的整型 alpha
     let a: number = Math.round(this.strokeOpacity * 255)
 
+    // 防御：防止计算结果越界
     if (a < 0) {
       a = 0
     } else if (a > 255) {
       a = 255
     }
-    return a
+
+    return a // 返回最终可用于写像素的 alpha 值
   }
 
-  // 把 overlayPm（drawPixelMap）按 alpha 合成到 basePm 上（只修改 basePm）
-  // 把绘制图层 overlayPm “盖”到 basePm 上：
-  // 只要 overlay 像素 alpha > 0，就直接用 overlay 的 RGBA 覆盖 base 对应像素
-  // 把 overlayPm（drawPixelMap）按 alpha 合成到 basePm 上（只修改 basePm）
-  // 规则：只要 overlay 像素 alpha > 0，就用 overlay 的 RGBA 覆盖 base 对应像素
+  // 把绘制图层 overlayPm 合成到 basePm 上，只修改 basePm 本身
+  // 规则很简单：只要 overlay 的某个像素 alpha > 0，就用 overlay 的 RGBA 直接覆盖 base
   private async mergeDrawLayerIntoBase(
     basePm: image.PixelMap,
     overlayPm: image.PixelMap
   ): Promise<void> {
+    // 读取底图和绘制层的基本信息
     const baseInfo: image.ImageInfo = await basePm.getImageInfo()
     const overInfo: image.ImageInfo = await overlayPm.getImageInfo()
 
     const width: number = baseInfo.size.width
     const height: number = baseInfo.size.height
 
-    // 尺寸对不上，避免崩溃直接返回
+    // 尺寸不一致时直接放弃，避免数组越界
     if (overInfo.size.width !== width || overInfo.size.height !== height) {
       console.warn(
         `mergeDrawLayerIntoBase: size mismatch base=${width}x${height} over=${overInfo.size.width}x${overInfo.size.height}`
@@ -3409,23 +3427,25 @@ struct Index {
       return
     }
 
+    // 为底图和绘制层各准备一个像素缓冲区
     const baseLen: number = basePm.getPixelBytesNumber()
     const overLen: number = overlayPm.getPixelBytesNumber()
 
     const baseBuf: ArrayBuffer = new ArrayBuffer(baseLen)
     const overBuf: ArrayBuffer = new ArrayBuffer(overLen)
 
+    // 把 PixelMap 的像素读到内存里
     await basePm.readPixelsToBuffer(baseBuf)
     await overlayPm.readPixelsToBuffer(overBuf)
 
     const baseData: Uint8Array = new Uint8Array(baseBuf)
     const overData: Uint8Array = new Uint8Array(overBuf)
 
-    // ✅ 统一通道顺序：全部走 getChannelOrder
+    // 根据像素格式，拿到 RGBA 在一个像素里的偏移
     const bch: ChannelOrder = this.getChannelOrder(baseInfo.pixelFormat)
     const och: ChannelOrder = this.getChannelOrder(overInfo.pixelFormat)
 
-    // 统一 bpp（你们当前都是 4；若未来出现不一致，这里直接保护退出）
+    // 每像素字节数必须一致，否则直接退出
     if (bch.bytesPerPixel !== och.bytesPerPixel) {
       console.warn(
         `mergeDrawLayerIntoBase: bytesPerPixel mismatch base=${bch.bytesPerPixel} over=${och.bytesPerPixel}`
@@ -3434,31 +3454,34 @@ struct Index {
     }
     const bpp: number = bch.bytesPerPixel
 
-    // ------- 简单粗暴：只要 overlay alpha > 0，就覆盖 base -------
+    // 逐像素扫描整张图
     for (let y: number = 0; y < height; y++) {
       for (let x: number = 0; x < width; x++) {
-        const idx: number = (y * width + x) * bpp
+        const idx: number = (y * width + x) * bpp // 当前像素起始位置
 
-        const oaIdx: number = idx + och.a
+        const oaIdx: number = idx + och.a // overlay 的 alpha 索引
         if (oaIdx < 0 || oaIdx >= overData.length) {
           continue
         }
+
         const alphaOver: number = overData[oaIdx]
         if (alphaOver === 0) {
-          // 没画东西/被橡皮擦擦掉的区域 → 跳过
+          // overlay 这里是透明的，说明没画内容，直接跳过
           continue
         }
 
+        // overlay 的 RGB 索引
         const orIdx: number = idx + och.r
         const ogIdx: number = idx + och.g
         const obIdx: number = idx + och.b
 
+        // base 的 RGBA 索引
         const brIdx: number = idx + bch.r
         const bgIdx: number = idx + bch.g
         const bbIdx: number = idx + bch.b
         const baIdx: number = idx + bch.a
 
-        // 保险：避免越界（未来 bpp/格式扩展时更安全）
+        // 再做一次越界保护
         if (
           orIdx < 0 || orIdx >= overData.length ||
             ogIdx < 0 || ogIdx >= overData.length ||
@@ -3475,40 +3498,57 @@ struct Index {
           continue
         }
 
+        // overlay 不透明 → 直接覆盖 base
         baseData[brIdx] = overData[orIdx]
         baseData[bgIdx] = overData[ogIdx]
         baseData[bbIdx] = overData[obIdx]
-        baseData[baIdx] = alphaOver // 保留 overlay 原始 alpha（如需强制 255，可在此改成 255）
+        baseData[baIdx] = alphaOver // 保留 overlay 的 alpha
       }
     }
 
+    // 把合成后的像素写回底图
     await basePm.writeBufferToPixels(baseBuf)
   }
 
-  // 仅用于“保存图片”：把当前 brightnessLevel / contrastLevel 烘焙到给定 pm，但不修改 this.brightnessLevel / this.contrastLevel
+  // 仅用于“保存图片”：
+  // 把当前 brightnessLevel / contrastLevel 的效果直接“烘焙”进像素数据里
   private async bakeToneForSave(pm: image.PixelMap): Promise<void> {
-    // 当前没有调整就直接不处理
+    // 如果亮度和对比度都为默认值，说明没有任何调整，直接返回
     if (this.brightnessLevel === 0 && this.contrastLevel === 0) {
       return
     }
 
+    // 读取像素格式和尺寸信息
     const info: image.ImageInfo = await pm.getImageInfo()
+
+    // 申请一块 ArrayBuffer，用来承载整张图的像素数据
     const byteLength: number = pm.getPixelBytesNumber()
     const buffer: ArrayBuffer = new ArrayBuffer(byteLength)
+
+    // 把 PixelMap 的像素数据读到 buffer 中
     await pm.readPixelsToBuffer(buffer)
+
+    // 用 Uint8Array 视图来逐字节操作 RGBA 数据
     const data: Uint8Array = new Uint8Array(buffer)
 
+    // 根据像素格式，统一获取各通道的偏移位置
     const ch: ChannelOrder = this.getChannelOrder(info.pixelFormat)
     const rOffset: number = ch.r
     const gOffset: number = ch.g
     const bOffset: number = ch.b
     const aOffset: number = ch.a
 
-    // 和你原来一致的亮度/对比度计算
+    // === 亮度 / 对比度计算===
+    // 对比度系数：contrastLevel = 0 时，c = 1
     const c: number = 1.0 + this.contrastLevel
+
+    // 亮度偏移：brightnessLevel 是 [-1, 1]，映射到 [-255, 255]
     const shiftBrightness: number = this.brightnessLevel * 255.0
+
+    // 综合偏移量：保证对比度变化是围绕 128 中心展开
     const shiftTotal: number = 128.0 * (1.0 - c) + shiftBrightness
 
+    // 限制数值到 [0, 255]，防止溢出
     const clamp = (v: number): number => {
       if (v < 0) {
         return 0
@@ -3519,123 +3559,145 @@ struct Index {
       return v
     }
 
+    // 遍历整张图的像素数据
+    // 每 4 个字节是一组像素（RGBA / BGRA / ARGB）
     for (let i: number = 0; i < data.length; i += 4) {
       const rIndex: number = i + rOffset
       const gIndex: number = i + gOffset
       const bIndex: number = i + bOffset
       const aIndex: number = i + aOffset
 
-      const r = data[rIndex]
-      const g = data[gIndex]
-      const b = data[bIndex]
+      // 读取原始 RGB 值
+      const r: number = data[rIndex]
+      const g: number = data[gIndex]
+      const b: number = data[bIndex]
 
+      // 对 RGB 应用亮度 + 对比度公式
       data[rIndex] = clamp(c * r + shiftTotal)
       data[gIndex] = clamp(c * g + shiftTotal)
       data[bIndex] = clamp(c * b + shiftTotal)
-      data[aIndex] = data[aIndex] // alpha 不变
+
+      // alpha 通道保持不变（透明度不受影响）
+      data[aIndex] = data[aIndex]
     }
 
+    // 把处理后的像素数据写回 PixelMap
     await pm.writeBufferToPixels(buffer)
   }
 
-  // 把「屏幕粗细」strokeWidth 换算成「图像像素半径」
-  // imgW / imgH 是当前图片（或绘制层）的像素尺寸
-  // 把“屏幕上粗细” strokeWidth 换算成“图像里的像素半径”
-  // imgW / imgH 是当前图像（或绘制层）的像素尺寸
+  // 把屏幕上的画笔粗细 strokeWidth 换算成图片里的像素半径，保证缩放前后看起来一样粗
   private computeStrokeRadiusPixel(imgW: number, imgH: number): number {
-    const MIN_RADIUS: number = 1
+    const MIN_RADIUS: number = 1 // 半径最小值，避免算出 0 画不出来
 
+    // 画布尺寸异常时兜底，直接用 strokeWidth 当像素半径
     if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
-      // 兜底：画布尺寸异常时，直接用 strokeWidth 当像素半径
       return Math.max(MIN_RADIUS, Math.floor(this.strokeWidth))
     }
 
-    // 和 UI→像素映射保持同一套缩放：contain 缩放 * 当前缩放因子
+    // 按 contain 规则计算图片在画布中的基础缩放比例
     const scaleBase: number = Math.min(
       this.canvasWidth / imgW,
       this.canvasHeight / imgH
     )
+
+    // 实际缩放倍数 = 基础缩放 × 当前 zoom
     const realScale: number = scaleBase * this.zoom
 
+    // 缩放异常时兜底，直接用 strokeWidth
     if (realScale <= 0) {
       return Math.max(MIN_RADIUS, Math.floor(this.strokeWidth))
     }
 
-    // strokeWidth 是“屏幕上的半径（px）”，除以 realScale 得到“图像像素半径”
+    // 屏幕上的画笔半径除以缩放倍数，得到真实写入像素的半径
     let r: number = this.strokeWidth / realScale
 
+    // 半径太小时强制给个最小值，避免看不见
     if (r < MIN_RADIUS) {
       r = MIN_RADIUS
     }
 
+    // 像素半径取整即可
     return Math.floor(r)
   }
 
+  // 确保指定 clientId 的远端用户存在于在线用户列表中，不存在则创建并加入
   private ensureRemoteUser(clientId: string): void {
-    // 已经存在就不重复添加
+    // 如果这个 clientId 已经在在线用户列表里了，就不用再加一次
     const existed: OnlineUserInfo | undefined = this.onlineUsers
       .find((u: OnlineUserInfo) => u.clientId === clientId);
     if (existed) {
       return;
     }
 
-    // 🎨 关键：颜色由 clientId 决定
+    // 根据 clientId 生成一个固定的显示颜色，同一个用户颜色始终一致
     const color: string = this.pickColorForClient(clientId);
 
+    // 构造远端用户信息，这里明确标记不是自己
     const remoteUser: OnlineUserInfo = {
       clientId: clientId,
       displayColor: color,
       isSelf: false
     };
 
+    // 把新用户追加到在线用户列表，用新数组触发状态更新
     this.onlineUsers = [...this.onlineUsers, remoteUser];
   }
 
-  // 根据 clientId 算一个稳定的颜色索引，同一个 clientId 在任何设备上都一样
-  // 根据 clientId 选择一个稳定的颜色：同一个 clientId → 同一个颜色
+  // 根据 clientId 计算一个稳定的颜色，用于给远端用户分配固定显示颜色
   private pickColorForClient(clientId: string): string {
+    // 使用一个简单的字符串 hash 算法，把 clientId 映射成一个 32 位无符号整数
     let hash: number = 0;
     for (let i = 0; i < clientId.length; i++) {
-      hash = (hash * 31 + clientId.charCodeAt(i)) >>> 0; // 无符号 32bit
+      // hash * 31 是常见做法，charCodeAt 提供字符的数值表示
+      hash = (hash * 31 + clientId.charCodeAt(i)) >>> 0; // 强制转成无符号 32bit
     }
 
+    // 颜色调色板的大小
     const paletteSize: number = this.userColorPalette.length;
     if (paletteSize === 0) {
-      return '#000000'; // 兜底
+      // 调色板为空时的兜底颜色，避免数组越界
+      return '#000000';
     }
 
+    // 用 hash 对调色板长度取模，保证索引一定落在有效范围内
     const idx: number = hash % paletteSize;
+
+    // 返回对应的颜色；同一个 clientId 永远得到同一个颜色
     return this.userColorPalette[idx];
   }
 
-  // 把当前画面同步给其他协作端（不会影响本地撤回栈）
+  // 把当前画面广播给其他协作端，用于实时同步画布内容（不影响本地撤销栈）
   private async syncCanvasToOthers(): Promise<void> {
-    // 没开协作、没连上、没图 → 直接不发
+    // 没有开启协作功能时，不做任何同步
     if (!this.collabEnabled) {
       return;
     }
+
+    // 协作客户端不存在或未连接，说明当前无法发送数据，直接跳过
     if (!this.collabClient || !this.collabClient.connected) {
       console.info('[Collab] not connected, skip syncCanvasToOthers');
       return;
     }
+
+    // 当前没有有效的像素数据，没必要同步
     if (!this.pixelMap) {
       console.info('[Collab] no pixelMap, skip syncCanvasToOthers');
       return;
     }
 
-    // ✅ 用 lastOpDesc 作为这次同步的“描述”
+    // 使用最近一次操作的描述，作为本次同步的说明信息，便于对端理解变更
     const desc: string = this.lastOpDesc || '';
 
+    // 把当前画面和操作描述一起广播给所有已连接的协作端
     await this.broadcastImageToPeers(this.pixelMap as image.PixelMap, desc);
   }
 
-  // ===== 操作记录：追加一条日志 =====
-  // ===== 操作记录：追加一条日志 =====
+  // 操作记录：向操作日志列表中追加一条记录，用于本地展示和协作提示
   private appendOpLog(userId: string, message: string, colorOpt?: string): void {
-    // 1) 优先使用外部传进来的颜色（比如本机操作用 this.localColor）
+    // 优先使用外部传入的颜色（例如本机操作时传入的本地用户颜色）
     let color: string | undefined = colorOpt;
 
-    // 2) 如果没传颜色，尝试从在线用户列表里找这个人的 displayColor
+    // 如果没有显式传颜色，则从在线用户列表中查找该用户对应的显示颜色
     if (!color) {
       const u: OnlineUserInfo | undefined = this.onlineUsers
         .find((item: OnlineUserInfo) => item.clientId === userId);
@@ -3644,16 +3706,19 @@ struct Index {
       }
     }
 
-    // 3) 还找不到，就兜底用本地的 pickColorForClient 保证不会是空
+    // 如果仍然没有颜色，则根据 userId 计算一个稳定颜色作为兜底
     if (!color) {
       color = this.pickColorForClient(userId);
     }
 
-    // 简单时间戳
+    // 生成当前时间戳，用于日志显示
     const now: Date = new Date();
     const ts: string = this.formatTime(now);
 
+    // 生成递增的日志 id，保证列表中每条记录都有唯一标识
     const id: number = ++this.opSeq;
+
+    // 构造一条完整的操作日志对象
     const item: OperationLogItem = {
       id: id,
       userId: userId,
@@ -3662,12 +3727,15 @@ struct Index {
       timestamp: ts
     };
 
-    // 最多保留 50 条，超过就从前面丢
+    // 将新日志追加到列表末尾
+    // 为了避免日志无限增长，只保留最近的 maxLen 条
     const maxLen: number = 50;
     const list: Array<OperationLogItem> = [...this.opLogList, item];
     if (list.length > maxLen) {
-      list.shift();
+      list.shift(); // 超出上限时，移除最早的一条日志
     }
+
+    // 更新操作日志列表，触发 UI 刷新
     this.opLogList = list;
   }
 
@@ -3679,176 +3747,177 @@ struct Index {
     return `${h}:${m}:${s}`;
   }
 
-  // 把当前 PixelMap 打包成 PNG + base64，通过 WebSocket 发给所有人
-  // 把当前 PixelMap 打包成 PNG + base64，通过 WebSocket 发给所有人
-  // 把当前画面（底图 + 绘制层 + 亮度/对比度）打包成 PNG + base64，通过 WebSocket 发给所有人
+  // 把当前画面（底图 + 绘制层 + 亮度/对比度）打包成 PNG + base64，并通过 WebSocket 同步给所有协作端
   private async broadcastImageToPeers(pm: image.PixelMap, opDesc: string): Promise<void> {
-    // 1) 克隆一份用于发送的临时代码（不要直接改 this.pixelMap）
+    // 克隆一份临时 PixelMap 用于发送，避免直接修改当前正在使用的 pixelMap
     const sendPm: image.PixelMap = await this.clonePixelMap(pm)
 
     try {
-      // 2) 如果有绘制层，把绘制层 merge 到 sendPm 上（让远端也看到画的线条/矩形等）
+      // 如果存在绘制层，则先把绘制层内容合并到发送用的 PixelMap 上
       if (this.drawPixelMap) {
         await this.mergeDrawLayerIntoBase(sendPm, this.drawPixelMap as image.PixelMap)
       }
 
-      // 3) 把当前亮度 / 对比度烘焙到 sendPm（只影响 sendPm，本地 state 不变）
+      // 把当前亮度和对比度调整结果烘焙进 sendPm，只影响发送内容
       await this.bakeToneForSave(sendPm)
 
-      // 4) pack 成 PNG 的 ArrayBuffer
+      // 创建 ImagePacker，把 PixelMap 打包成 PNG 格式
       const packer = image.createImagePacker()
       const packOpts: image.PackingOption = {
         format: 'image/png',
         quality: 100
       }
-      const pngBuffer: ArrayBuffer = await packer.packToData(sendPm, packOpts)
-      packer.release?.()
 
-      // 5) ArrayBuffer -> base64
+      // 将 PixelMap 转成 PNG 的 ArrayBuffer
+      const pngBuffer: ArrayBuffer = await packer.packToData(sendPm, packOpts)
+      packer.release?.() // 打包完成后释放 packer 资源
+
+      // 把 PNG 的 ArrayBuffer 转成 base64，方便通过 WebSocket 传输
       const pngBase64: string = this.arrayBufferToBase64(pngBuffer)
 
+      // 确定发送方 clientId，优先使用本地 clientId
       const senderId: string = this.localClientId || this.clientId
+
+      // 构造协作同步消息，包含图片数据和本次操作描述
       const msg: CollabMessage = {
         type: 'imageSync',
         clientId: senderId,
         payload: {
           format: 'image/png',
           dataBase64: pngBase64,
-          opDesc: opDesc, // 👈 使用参数里的描述
+          opDesc: opDesc
         } as CollabImageSyncPayload
       }
 
+      // 通过协作客户端把消息发送给所有已连接的协作端
       this.collabClient.send(msg)
       console.info('[Collab] broadcast image-sync, size(base64)=', pngBase64.length)
     } finally {
-      // 6) 释放临时 PixelMap
+      // 无论成功还是失败，都要释放临时 PixelMap，避免内存泄漏
       sendPm.release?.()
     }
   }
 
-  // 统一封装：图像修改后，记录一条操作 + 同步到其他端
-  // 统一封装：图像修改后，记录一条操作 + 同步到其他端
+  // 统一封装：每次图像内容发生变化后，记录一条操作日志，并在需要时同步给其他协作端
   private async logAndSyncAfterImageChange(opDesc: string): Promise<void> {
+    // 确定本机的用户 id，优先使用 localClientId
     const selfId: string = this.localClientId || this.clientId
-    // 1) 本机操作日志
+
+    // 先在本地追加一条操作日志，颜色使用本机的显示颜色
     this.appendOpLog(selfId, opDesc, this.localColor)
 
-    // 2) 协作描述，给对端显示同样的文字
+    // 保存这次操作描述，供后续协作同步时使用
     this.lastOpDesc = opDesc
 
-    // 3) 如果没在协作 / 没连上 / 没有图，就只记日志，不发图
-    if (!this.collabEnabled ||
-      !this.collabClient ||
-      !this.collabClient.connected ||
-      !this.pixelMap) {
+    // 如果未开启协作、未连接成功或当前没有图像，则只记录日志，不做同步
+    if (
+      !this.collabEnabled ||
+        !this.collabClient ||
+        !this.collabClient.connected ||
+        !this.pixelMap
+    ) {
       return
     }
 
-    // 4) 准备要发送的 PixelMap：
-    //    - 默认是当前 this.pixelMap
-    //    - 如果有亮度/对比度参数，就 clone 一张临时图，先把亮度/对比度烘焙进去再发
+    // 默认直接使用当前的 pixelMap 作为发送对象
     let pmForSend: image.PixelMap = this.pixelMap as image.PixelMap
 
+    // 如果当前存在亮度或对比度调整，需要先克隆并把调整结果烘焙进临时图像
     if (this.brightnessLevel !== 0 || this.contrastLevel !== 0) {
-      // clone 一份临时图
-      const cloned: image.PixelMap = await this.clonePixelMap(pmForSend)
-      // 把当前 brightnessLevel / contrastLevel 烘焙进去（不会修改 this.brightnessLevel / this.contrastLevel）
-      await this.bakeToneForSave(cloned)
+      const cloned: image.PixelMap = await this.clonePixelMap(pmForSend) // 克隆一份临时图
+      await this.bakeToneForSave(cloned) // 把亮度和对比度效果写入临时图
       pmForSend = cloned
     }
 
-    // 5) 真正通过 WebSocket 广播
+    // 通过 WebSocket 把当前画面和操作描述广播给所有协作端
     await this.broadcastImageToPeers(pmForSend, opDesc)
 
-    // 6) 如果用的是临时 clone，用完释放掉
+    // 如果发送用的是临时克隆的 PixelMap，用完后及时释放
     if (pmForSend !== this.pixelMap) {
       pmForSend.release?.()
     }
   }
 
-  // 把 ArrayBuffer 转成 base64 字符串
-  // ArrayBuffer -> base64 字符串
-  // ArrayBuffer -> base64 string
+  // 把一个 ArrayBuffer 转成 base64 字符串，方便通过网络传输
   private arrayBufferToBase64(buf: ArrayBuffer): string {
-    // 显式类型：Uint8Array
-    const uint8: Uint8Array = new Uint8Array(buf)
-    const base64Helper: util.Base64Helper = new util.Base64Helper()
-    const base64Str: string = base64Helper.encodeToStringSync(uint8)
-    return base64Str
+    const uint8: Uint8Array = new Uint8Array(buf) // 把二进制缓冲区包装成字节数组
+    const base64Helper: util.Base64Helper = new util.Base64Helper() // 创建 base64 编解码工具
+    const base64Str: string = base64Helper.encodeToStringSync(uint8) // 同步编码成 base64 字符串
+    return base64Str // 返回结果
   }
 
-  // base64 string -> ArrayBuffer
+  // 把 base64 字符串还原成 ArrayBuffer，用于恢复二进制数据
   private base64ToArrayBuffer(b64: string): ArrayBuffer {
-    const base64Helper: util.Base64Helper = new util.Base64Helper()
-    // decodeSync 返回 Uint8Array
-    const uint8: Uint8Array = base64Helper.decodeSync(b64)
-    // Uint8Array 自带 buffer，就是 ArrayBuffer
-    const buf: ArrayBuffer = uint8.buffer as ArrayBuffer
-    return buf
+    const base64Helper: util.Base64Helper = new util.Base64Helper() // 创建 base64 编解码工具
+    const uint8: Uint8Array = base64Helper.decodeSync(b64) // 把 base64 解码成字节数组
+    const buf: ArrayBuffer = uint8.buffer as ArrayBuffer // 直接取底层的 ArrayBuffer
+    return buf // 返回二进制缓冲区
   }
 
-  // 把远端发来的 base64 PNG 转成 PixelMap 并应用到本地
-  // ⭐ 建议：直接用这个版本覆盖你现有的 applyRemoteImage
+  // 把远端同步过来的 base64 PNG 解码成 PixelMap，并整体替换本地画面
   private async applyRemoteImage(payload: CollabImageSyncPayload): Promise<void> {
-    // 1. 先把 payload.dataBase64 解成 PixelMap（你原来的逻辑）
-    const buf: ArrayBuffer = this.base64ToArrayBuffer(payload.dataBase64);
-    const imgSource: image.ImageSource = image.createImageSource(buf);
-    const remotePm: image.PixelMap = await imgSource.createPixelMap({
-      editable: true
-    });
-    imgSource.release?.();
+    // 把 base64 的 PNG 数据解码成 ArrayBuffer
+    const buf: ArrayBuffer = this.base64ToArrayBuffer(payload.dataBase64)
+    // 用二进制数据创建 ImageSource
+    const imgSource: image.ImageSource = image.createImageSource(buf)
+    // 从 ImageSource 生成可编辑的 PixelMap
+    const remotePm: image.PixelMap = await imgSource.createPixelMap({ editable: true })
+    imgSource.release?.() // 释放 ImageSource，避免资源泄漏
 
-    // 2. 在“接收远端画面”之前，把当前整张图压一份快照到 history 里
+    // 在替换为远端画面前，把当前画面压入历史栈，支持撤销
     if (this.pixelMap) {
-      const currentPm: image.PixelMap = this.pixelMap as image.PixelMap;
-      const backupPm: image.PixelMap = await this.clonePixelMap(currentPm);
-      await this.pushHistorySnapshot(true, backupPm);
+      const currentPm: image.PixelMap = this.pixelMap as image.PixelMap
+      const backupPm: image.PixelMap = await this.clonePixelMap(currentPm)
+      await this.pushHistorySnapshot(true, backupPm)
     }
 
-    // 3. 释放当前底图
+    // 释放当前底图 PixelMap
     if (this.pixelMap) {
-      (this.pixelMap as image.PixelMap).release?.();
+      (this.pixelMap as image.PixelMap).release?.()
     }
 
-    // 4. 替换为远端底图（协作 flatten 之后的“总画面”）
-    this.pixelMap = remotePm;
+    // 用远端传来的 PixelMap 直接作为新的底图
+    this.pixelMap = remotePm
 
-    // 5. 更新 originalPixelMap（方便 resetView 回到“协作后的初始状态”）
+    // 更新 originalPixelMap，后续 resetView 以协作后的状态为基准
     if (this.originalPixelMap) {
-      this.originalPixelMap.release?.();
+      this.originalPixelMap.release?.()
     }
-    this.originalPixelMap = await this.clonePixelMap(remotePm);
+    this.originalPixelMap = await this.clonePixelMap(remotePm)
 
-    // 6. ⭐ 关键修改：协作图像之后，直接在 pixelMap 上作画，
-    //    所以这里把 drawPixelMap 清掉，不再新建透明 overlay
+    // 清空绘制层，协作图像已经是“拍平”的最终结果
     if (this.drawPixelMap) {
-      this.drawPixelMap.release?.();
-      this.drawPixelMap = undefined;
+      this.drawPixelMap.release?.()
+      this.drawPixelMap = undefined
     }
-    this.drawPixelVersion++;
-    console.info('[Collab] applyRemoteImage: set pixelMap from remote, clear drawPixelMap, will draw directly on pixelMap.');
+    this.drawPixelVersion++ // 通知叠加层发生变化
 
-    // 7. 视图参数可以按你原来逻辑处理
-    this.zoom = 1.0;
-    this.offsetX = 0;
-    this.offsetY = 0;
-    this.brightnessLevel = 0.0;
-    this.contrastLevel = 0.0;
-    this.accumulatedRotate = 0;
+    console.info('[Collab] applyRemoteImage: replace pixelMap from remote and clear draw layer')
 
-    this.pixelVersion++;
+    // 重置视图相关参数，避免远端状态影响本地显示
+    this.zoom = 1.0
+    this.offsetX = 0
+    this.offsetY = 0
+    this.brightnessLevel = 0.0
+    this.contrastLevel = 0.0
+    this.accumulatedRotate = 0
+
+    // 更新像素版本号，驱动 UI 刷新
+    this.pixelVersion++
   }
 
-  // ⭐ 新增：在任何会改画面的操作之前，保存“整张图”的快照
+  // 在任何会修改画面的操作之前，先保存一份“完整画面”的快照，用于撤销
   private async pushFullSnapshotBeforeChange(): Promise<void> {
     if (!this.pixelMap) {
-      return;
+      return // 当前没有底图，没必要记录快照
     }
-    const currentPm: image.PixelMap = this.pixelMap as image.PixelMap;
-    // 一定要 clone，一定不能直接把 this.pixelMap 传进去
-    const backupPm: image.PixelMap = await this.clonePixelMap(currentPm);
 
-    // includePixel = true，pmForSnapshot 用我们 clone 出来的 backupPm
-    await this.pushHistorySnapshot(true, backupPm);
+    const currentPm: image.PixelMap = this.pixelMap as image.PixelMap // 当前正在显示的底图
+
+    // 必须 clone 一份新的 PixelMap，不能直接引用原来的 pixelMap
+    const backupPm: image.PixelMap = await this.clonePixelMap(currentPm)
+
+    // 把这份克隆后的完整图像压入历史栈，标记为包含像素数据
+    await this.pushHistorySnapshot(true, backupPm)
   }
 }
