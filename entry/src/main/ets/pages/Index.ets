@@ -2448,6 +2448,7 @@ struct Index {
   }
 
   // 在像素缓冲区中以(cx, cy)为中心画一个有粗细的实心点，供画线/画点复用
+  // 在像素缓冲区中以 (cx, cy) 为中心画一个有粗细的实心点（画点/画线复用）
   private drawThickPointIntoBuffer(
     data: Uint8Array,
     width: number,
@@ -2459,39 +2460,48 @@ struct Index {
     gOffset: number,
     bOffset: number,
     aOffset: number,
-    alpha: number
+    alpha: number,
+    bpp: number // 每个像素占多少字节（RGBA/BGRA/ARGB 一般都是 4）
   ): void {
-    // 在点的上下范围内扫描
     for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
       if (yy < 0 || yy >= height) {
         continue
-      } // 超出画布就跳过
+      }
 
-      // 在点的左右范围内扫描
       for (let xx: number = cx - radius; xx <= cx + radius; xx++) {
         if (xx < 0 || xx >= width) {
           continue
-        } // 超出画布就跳过
+        }
 
-        const dx: number = xx - cx // x方向到中心的距离
-        const dy: number = yy - cy // y方向到中心的距离
+        const dx: number = xx - cx
+        const dy: number = yy - cy
         if (dx * dx + dy * dy > radius * radius) {
           continue
-        } // 圆外的像素不要
+        }
 
-        const baseIndex: number = (yy * width + xx) * 4 // 当前像素起始下标
-        const rIndex: number = baseIndex + rOffset // R通道位置
-        const gIndex: number = baseIndex + gOffset // G通道位置
-        const bIndex: number = baseIndex + bOffset // B通道位置
-        const aIndex: number = baseIndex + aOffset // A通道位置
+        const baseIndex: number = (yy * width + xx) * bpp // 原来写死 *4，这里改成 *bpp
+        const rIndex: number = baseIndex + rOffset
+        const gIndex: number = baseIndex + gOffset
+        const bIndex: number = baseIndex + bOffset
+        const aIndex: number = baseIndex + aOffset
+
+        if (aIndex < 0 || aIndex >= data.length) {
+          continue
+        }
 
         if (this.currentBrush === BrushTool.Eraser) {
-          data[aIndex] = 0 // 橡皮擦只把透明度清掉
+          data[aIndex] = 0
         } else {
-          data[rIndex] = this.strokeR // 写入画笔颜色R
-          data[gIndex] = this.strokeG // 写入画笔颜色G
-          data[bIndex] = this.strokeB // 写入画笔颜色B
-          data[aIndex] = alpha // 写入画笔透明度
+          if (rIndex >= 0 && rIndex < data.length) {
+            data[rIndex] = this.strokeR
+          }
+          if (gIndex >= 0 && gIndex < data.length) {
+            data[gIndex] = this.strokeG
+          }
+          if (bIndex >= 0 && bIndex < data.length) {
+            data[bIndex] = this.strokeB
+          }
+          data[aIndex] = alpha
         }
       }
     }
@@ -2634,6 +2644,7 @@ struct Index {
     const gOffset: number = ch.g
     const bOffset: number = ch.b
     const aOffset: number = ch.a
+    const bpp: number = ch.bytesPerPixel
 
     // 根据画布大小和当前画笔宽度，计算像素级半径
     const radius: number = this.computeStrokeRadiusPixel(width, height)
@@ -2642,43 +2653,23 @@ struct Index {
 
     // 在指定像素(cx, cy)位置，画一个“带半径的圆点”
     // 这是实现“粗线条”的基础
-    const drawThickPoint = (cx: number, cy: number): void => {
-      for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
-        if (yy < 0 || yy >= height) {
-          continue
-        }
-        for (let xx: number = cx - radius; xx <= cx + radius; xx++) {
-          if (xx < 0 || xx >= width) {
-            continue
-          }
-
-          // 判断这个像素是否在圆形半径内
-          const dx: number = xx - cx
-          const dy: number = yy - cy
-          if (dx * dx + dy * dy > radius * radius) {
-            continue
-          }
-
-          // 计算这个像素在一维 buffer 里的起始索引
-          const baseIndex: number = (yy * width + xx) * 4
-          const rIndex: number = baseIndex + rOffset
-          const gIndex: number = baseIndex + gOffset
-          const bIndex: number = baseIndex + bOffset
-          const aIndex: number = baseIndex + aOffset
-
-          // 橡皮擦：只把 alpha 清零
-          if (this.currentBrush === BrushTool.Eraser) {
-            data[aIndex] = 0
-          } else {
-            // 普通画笔：写入颜色和透明度
-            data[rIndex] = this.strokeR
-            data[gIndex] = this.strokeG
-            data[bIndex] = this.strokeB
-            data[aIndex] = alpha
-          }
-        }
-      }
+    const drawThickPoint = (x: number, y: number): void => {
+      this.drawThickPointIntoBuffer(
+        data,
+        width,
+        height,
+        x,
+        y,
+        radius,
+        rOffset,
+        gOffset,
+        bOffset,
+        aOffset,
+        alpha,
+        bpp
+      )
     }
+
 
     // 5. 使用 Bresenham 算法逐像素走一条直线
     // 每走到一个像素点，就画一个“粗点”
@@ -2859,44 +2850,28 @@ struct Index {
     const gOffset: number = ch.g
     const bOffset: number = ch.b
     const aOffset: number = ch.a
+    const bpp: number = ch.bytesPerPixel
 
     const radius: number = this.computeStrokeRadiusPixel(width, height)
     const alpha: number = this.getStrokeAlpha()
 
-    const drawThickPoint = (cx: number, cy: number): void => {
-      for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
-        if (yy < 0 || yy >= height) {
-          continue
-        }
-        for (let xx: number = cx - radius; xx <= cx + radius; xx++) {
-          if (xx < 0 || xx >= width) {
-            continue
-          }
-
-          const dx: number = xx - cx
-          const dy: number = yy - cy
-          if (dx * dx + dy * dy > radius * radius) {
-            continue
-          }
-
-          const baseIndex: number = (yy * width + xx) * 4
-          const rIndex: number = baseIndex + rOffset
-          const gIndex: number = baseIndex + gOffset
-          const bIndex: number = baseIndex + bOffset
-          const aIndex: number = baseIndex + aOffset
-
-          if (this.currentBrush === BrushTool.Eraser) {
-            // 橡皮擦：只擦绘制层的 alpha
-            data[aIndex] = 0
-          } else {
-            data[rIndex] = this.strokeR
-            data[gIndex] = this.strokeG
-            data[bIndex] = this.strokeB
-            data[aIndex] = alpha
-          }
-        }
-      }
+    const drawThickPoint = (x: number, y: number): void => {
+      this.drawThickPointIntoBuffer(
+        data,
+        width,
+        height,
+        x,
+        y,
+        radius,
+        rOffset,
+        gOffset,
+        bOffset,
+        aOffset,
+        alpha,
+        bpp
+      )
     }
+
 
     // 5）画四条边：上、下、左、右
     for (let x: number = left; x <= right; x++) {
@@ -2979,43 +2954,27 @@ struct Index {
     const gOffset: number = ch.g
     const bOffset: number = ch.b
     const aOffset: number = ch.a
+    const bpp: number = ch.bytesPerPixel
 
     const strokeRadius: number = this.computeStrokeRadiusPixel(width, height)
 
     const alpha: number = this.getStrokeAlpha()
 
     const drawThickPoint = (px: number, py: number): void => {
-      for (let yy: number = py - strokeRadius; yy <= py + strokeRadius; yy++) {
-        if (yy < 0 || yy >= height) {
-          continue
-        }
-        for (let xx: number = px - strokeRadius; xx <= px + strokeRadius; xx++) {
-          if (xx < 0 || xx >= width) {
-            continue
-          }
-          const dx: number = xx - px
-          const dy: number = yy - py
-          if (dx * dx + dy * dy > strokeRadius * strokeRadius) {
-            continue
-          }
-
-          const baseIndex: number = (yy * width + xx) * 4
-          const rIndex: number = baseIndex + rOffset
-          const gIndex: number = baseIndex + gOffset
-          const bIndex: number = baseIndex + bOffset
-          const aIndex: number = baseIndex + aOffset
-
-          if (this.currentBrush === BrushTool.Eraser) {
-            // 橡皮擦：只擦掉绘制层 alpha
-            data[aIndex] = 0
-          } else {
-            data[rIndex] = this.strokeR
-            data[gIndex] = this.strokeG
-            data[bIndex] = this.strokeB
-            data[aIndex] = alpha
-          }
-        }
-      }
+      this.drawThickPointIntoBuffer(
+        data,
+        width,
+        height,
+        px,
+        py,
+        strokeRadius,
+        rOffset,
+        gOffset,
+        bOffset,
+        aOffset,
+        alpha,
+        bpp
+      )
     }
 
     // 3）用参数方程画一圈：x = cx + r cos t, y = cy + r sin t
@@ -3237,42 +3196,26 @@ struct Index {
     const gOffset: number = ch.g
     const bOffset: number = ch.b
     const aOffset: number = ch.a
+    const bpp: number = ch.bytesPerPixel // 一像素占多少字节（一般是4）
 
     const thickRadius: number = this.computeStrokeRadiusPixel(width, height)
     const alpha: number = this.getStrokeAlpha()
 
     const drawThickPoint = (px: number, py: number): void => {
-      for (let yy: number = py - thickRadius; yy <= py + thickRadius; yy++) {
-        if (yy < 0 || yy >= height) {
-          continue
-        }
-        for (let xx: number = px - thickRadius; xx <= px + thickRadius; xx++) {
-          if (xx < 0 || xx >= width) {
-            continue
-          }
-          const dx: number = xx - px
-          const dy: number = yy - py
-          if (dx * dx + dy * dy > thickRadius * thickRadius) {
-            continue
-          }
-
-          const baseIndex: number = (yy * width + xx) * 4
-          const rIndex: number = baseIndex + rOffset
-          const gIndex: number = baseIndex + gOffset
-          const bIndex: number = baseIndex + bOffset
-          const aIndex: number = baseIndex + aOffset
-
-          if (this.currentBrush === BrushTool.Eraser) {
-            // 橡皮擦：只擦绘制层，让它透明
-            data[aIndex] = 0
-          } else {
-            data[rIndex] = this.strokeR
-            data[gIndex] = this.strokeG
-            data[bIndex] = this.strokeB
-            data[aIndex] = alpha
-          }
-        }
-      }
+      this.drawThickPointIntoBuffer(
+        data,
+        width,
+        height,
+        px,
+        py,
+        thickRadius,
+        rOffset,
+        gOffset,
+        bOffset,
+        aOffset,
+        alpha,
+        bpp
+      )
     }
 
     // 3）参数方程椭圆：x = cx + rx cos t, y = cy + ry sin t
@@ -3380,7 +3323,6 @@ struct Index {
     const width: number = imgW
     const height: number = imgH
 
-    // ✅ 统一通道顺序：所有读写像素都走 getChannelOrder
     const ch: ChannelOrder = this.getChannelOrder(pixelFormat)
     const rOffset: number = ch.r
     const gOffset: number = ch.g
@@ -3391,48 +3333,23 @@ struct Index {
     const radius: number = this.computeStrokeRadiusPixel(imgW, imgH)
     const alpha: number = this.getStrokeAlpha()
 
-    const drawThickPoint = (cx: number, cy: number): void => {
-      for (let yy: number = cy - radius; yy <= cy + radius; yy++) {
-        if (yy < 0 || yy >= height) {
-          continue
-        }
-        for (let xx: number = cx - radius; xx <= cx + radius; xx++) {
-          if (xx < 0 || xx >= width) {
-            continue
-          }
-
-          const dx: number = xx - cx
-          const dy: number = yy - cy
-          if (dx * dx + dy * dy > radius * radius) {
-            continue
-          }
-
-          const baseIndex: number = (yy * width + xx) * 4
-          const rIndex: number = baseIndex + rOffset
-          const gIndex: number = baseIndex + gOffset
-          const bIndex: number = baseIndex + bOffset
-          const aIndex: number = baseIndex + aOffset
-
-          if (aIndex >= buffer.length) {
-            // 理论上不会越界，保险起见
-            continue
-          }
-
-          if (this.currentBrush === BrushTool.Eraser) {
-            // 🧽 橡皮擦：只把绘制层擦透明
-            buffer[aIndex] = 0
-          } else {
-            // 普通画笔 / 荧光笔：用当前笔刷颜色 + 透明度
-            buffer[rIndex] = this.strokeR
-            buffer[gIndex] = this.strokeG
-            buffer[bIndex] = this.strokeB
-            buffer[aIndex] = alpha
-          }
-        }
-      }
+    const drawThickPoint = (px: number, py: number): void => {
+      this.drawThickPointIntoBuffer(
+        buffer, // 这里用 buffer，不是 data
+        width,
+        height,
+        px,
+        py,
+        radius, // 这里用 radius，不是 thickRadius
+        rOffset,
+        gOffset,
+        bOffset,
+        aOffset,
+        alpha,
+        bpp
+      )
     }
 
-    // —— 下面 Bresenham 画线保持不变 ——
     let curX: number = x0
     let curY: number = y0
     const dx: number = Math.abs(x1 - x0)
