@@ -1,86 +1,84 @@
 // entry/src/main/ets/common/collab/CollabClient.ets
-import { webSocket } from '@kit.NetworkKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+// WebSocket 协作客户端：负责连接服务器、收发协作消息
+import { webSocket } from '@kit.NetworkKit'
+import { BusinessError } from '@kit.BasicServicesKit'
 
-// ========== 协作消息类型定义 ==========
+// ========== 协作消息 payload 定义 ==========
+
+// 图片同步消息的 payload，表示一整张画面
 export interface CollabImageSyncPayload {
-  format: string; // 'image/png'
-  dataBase64: string; // 整张图片的 PNG 的 base64
-  opDesc?: string;
+  format: string // 图片格式，例如 'image/png'
+  dataBase64: string // 整张图片的 PNG base64 数据
+  opDesc?: string // 可选的操作描述文字
 }
 
-
-// ==== 新增：服务器给客户端分配身份的 payload ====
+// 服务器给客户端分配身份时使用的 payload
 export interface CollabAssignIdPayload {
-  displayColor: string; // 例如 '#EF4444'
-  opDesc?: string;
+  displayColor: string // 服务器分配的显示颜色
+  opDesc?: string // 可选说明
 }
 
+// 单个在线用户的信息
 export interface OnlineUserItem {
-  clientId: string;
-  displayColor: string;
+  clientId: string // 客户端唯一标识
+  displayColor: string // 该用户在 UI 中显示的颜色
 }
 
+// 在线用户列表的 payload
 export interface OnlineUsersPayload {
-  users: Array<OnlineUserItem>;
+  users: Array<OnlineUserItem> // 当前在线的所有用户
 }
 
-
-// 所有消息类型（加上 'assignId'）
+// 所有协作消息类型
 export type CollabMessageType =
-  | 'assignId'
-    | 'clear'
-    | 'imageSync'
-    | 'onlineUsers'; // ← 新增
+  | 'assignId' // 服务器分配 clientId
+    | 'clear' // 清空图层
+    | 'imageSync' // 同步整张图像
+    | 'onlineUsers' // 在线用户列表更新
 
-
+// 协作消息的统一结构
 export interface CollabMessage {
-  type: CollabMessageType;
-  clientId: string;
+  type: CollabMessageType // 消息类型
+  clientId: string // 发送方 clientId
   payload:
     | CollabAssignIdPayload
     | CollabClearPayload
     | CollabImageSyncPayload
-    | OnlineUsersPayload; // ✅ 一定要加这一行
+    | OnlineUsersPayload
 }
 
-
-// 单个笔迹点
+// 单个笔迹点的数据结构
 export interface StrokePoint {
-  x: number;
-  y: number;
-  pressure: number; // 0~1
-  color: string; // '#RRGGBB'
-  width: number; // 画笔宽度（屏幕像素）
+  x: number // 像素 x
+  y: number // 像素 y
+  pressure: number // 压力值 0~1
+  color: string // 颜色 '#RRGGBB'
+  width: number // 画笔宽度（屏幕像素）
 }
 
-// 笔迹消息的 payload
+// 笔迹同步消息的 payload
 export interface CollabStrokePayload {
-  layerId: string;
-  points: Array<StrokePoint>;
-  color: string;
-  width: number;
+  layerId: string // 图层 id
+  points: Array<StrokePoint> // 笔迹点列表
+  color: string // 笔迹颜色
+  width: number // 笔迹宽度
 }
 
 // 清空图层消息的 payload
 export interface CollabClearPayload {
-  layerId: string;
-  opDesc?: string; // 🔵 新增，可选说明文字
+  layerId: string // 被清空的图层 id
+  opDesc?: string // 可选操作说明
 }
-
 
 // 所有 payload 的联合类型
 export type CollabPayload =
-  CollabStrokePayload
+  | CollabStrokePayload
     | CollabClearPayload
     | CollabImageSyncPayload
     | CollabAssignIdPayload
-    | OnlineUsersPayload; // ← 新加入这个
+    | OnlineUsersPayload
 
-
-// ==== 工具函数：构造 “清空图层” 消息 ====
-
-// 注意：这里用显式的 interface 类型，ArkTS 认可，不会报 untyped object literal
+// 构造一条“清空图层”的协作消息
 export function buildClearMessage(
   clientId: string,
   layerId: string,
@@ -89,207 +87,173 @@ export function buildClearMessage(
   const payload: CollabClearPayload = {
     layerId: layerId,
     opDesc: opDesc
-  };
+  }
 
-  // 🚨 不能写成字面量，要用“创建空对象 + 赋值”的方式
-  const msg = {} as CollabMessage;
-  msg.type = 'clear';
-  msg.clientId = clientId;
-  msg.payload = payload;
+  const msg = {} as CollabMessage // ArkTS 要求显式声明类型
+  msg.type = 'clear'
+  msg.clientId = clientId
+  msg.payload = payload
 
-  return msg;
+  return msg
 }
-
 
 // ========== 回调类型定义 ==========
 
-export type CollabMsgCallback = (msg: CollabMessage) => void;
+// 收到协作消息时的回调
+export type CollabMsgCallback = (msg: CollabMessage) => void
 
-export type CollabErrorCallback = (msg: string) => void;
+// 出错时的回调
+export type CollabErrorCallback = (msg: string) => void
 
-export type CollabStateCallback = () => void;
+// 连接状态变化回调
+export type CollabStateCallback = () => void
 
-// ========== WebSocket 客户端封装 ==========
+// ========== WebSocket 协作客户端封装 ==========
 
+// WebSocket 协作客户端封装类
 export class CollabClient {
-  private url: string;
-  private ws: webSocket.WebSocket | null = null;
-  private isConnected: boolean = false;
-  private onOpen?: CollabStateCallback;
-  private onClose?: CollabStateCallback;
-  private onMsg?: CollabMsgCallback;
-  private onErr?: CollabErrorCallback;
+  private url: string // WebSocket 服务地址
+  private ws: webSocket.WebSocket | null = null // 当前 WebSocket 实例
+  private isConnected: boolean = false // 当前连接状态
+  private onOpen?: CollabStateCallback // 连接成功回调
+  private onClose?: CollabStateCallback // 连接关闭回调
+  private onMsg?: CollabMsgCallback // 收到消息回调
+  private onErr?: CollabErrorCallback // 错误回调
 
   constructor(url: string) {
-    this.url = url; // 例如 "ws://192.168.0.10:8080/collab"
+    this.url = url // 例如 ws://192.168.0.10:8080/collab
   }
 
-  /**
-   * 设置回调
-   */
+  // 设置连接 / 消息 / 错误回调
   setCallbacks(
     onOpen?: CollabStateCallback,
     onClose?: CollabStateCallback,
     onMsg?: CollabMsgCallback,
     onErr?: CollabErrorCallback
   ): void {
-    this.onOpen = onOpen;
-    this.onClose = onClose;
-    this.onMsg = onMsg;
-    this.onErr = onErr;
+    this.onOpen = onOpen
+    this.onClose = onClose
+    this.onMsg = onMsg
+    this.onErr = onErr
   }
 
-  /**
-   * 建立连接
-   */
+  // 建立 WebSocket 连接
   connect(): void {
-    // 已有连接先关闭
     if (this.ws !== null) {
-      this.safeCloseInner();
-      this.ws = null;
+      this.safeCloseInner() // 已存在连接先关闭
+      this.ws = null
     }
 
-    const socket: webSocket.WebSocket = webSocket.createWebSocket();
-    this.ws = socket;
+    const socket: webSocket.WebSocket = webSocket.createWebSocket()
+    this.ws = socket
 
-    // --- open 事件 ---
+    // WebSocket 打开事件
     socket.on('open', (err: BusinessError, _value: Object) => {
       if (err) {
-        this.reportError('WebSocket open error: ' + JSON.stringify(err));
-        return;
+        this.reportError('WebSocket open error: ' + JSON.stringify(err))
+        return
       }
-      this.isConnected = true;
-      if (this.onOpen) {
-        this.onOpen();
-      }
-    });
+      this.isConnected = true
+      this.onOpen && this.onOpen()
+    })
 
-    // --- message 事件 ---
+    // WebSocket 消息事件
     socket.on('message', (err: BusinessError, data: string | ArrayBuffer) => {
       if (err) {
-        this.reportError('WebSocket message error: ' + JSON.stringify(err));
-        return;
+        this.reportError('WebSocket message error: ' + JSON.stringify(err))
+        return
       }
 
       if (typeof data === 'string') {
-        this.handleTextMessage(data);
+        this.handleTextMessage(data) // 只处理文本 JSON
       } else {
-        // 后面你要支持二进制再扩展
-        this.reportError('Unsupported binary message from server');
+        this.reportError('Unsupported binary message from server')
       }
-    });
+    })
 
-    // --- close 事件 ---
-    socket.on('close', (err: BusinessError, _result: webSocket.CloseResult) => {
-      this.isConnected = false;
+    // WebSocket 关闭事件
+    socket.on('close', (err: BusinessError) => {
+      this.isConnected = false
       if (err) {
-        this.reportError('WebSocket close error: ' + JSON.stringify(err));
+        this.reportError('WebSocket close error: ' + JSON.stringify(err))
       }
-      if (this.onClose) {
-        this.onClose();
-      }
-    });
+      this.onClose && this.onClose()
+    })
 
-    // --- error 事件 ---
+    // WebSocket 错误事件
     socket.on('error', (err: BusinessError) => {
-      this.isConnected = false;
-      this.reportError('WebSocket error: ' + JSON.stringify(err));
-    });
+      this.isConnected = false
+      this.reportError('WebSocket error: ' + JSON.stringify(err))
+    })
 
-    // --- 发起连接 ---
+    // 发起连接
     socket.connect(this.url, (err: BusinessError, value: boolean) => {
       if (err) {
-        this.reportError('WebSocket connect error: ' + JSON.stringify(err));
-        return;
+        this.reportError('WebSocket connect error: ' + JSON.stringify(err))
+        return
       }
       if (!value) {
-        this.reportError('WebSocket connect failed, value=false');
+        this.reportError('WebSocket connect failed, value=false')
       }
-      // 真正 ready 还是看 on('open')
-    });
+    })
   }
 
-  /**
-   * 发送协作消息
-   */
+  // 发送一条协作消息
   send(msg: CollabMessage): void {
-    if (this.ws === null || !this.isConnected) {
-      this.reportError('WebSocket not connected, cannot send');
-      return;
+    if (!this.ws || !this.isConnected) {
+      this.reportError('WebSocket not connected, cannot send')
+      return
     }
 
-    const text: string = JSON.stringify(msg);
-    const promise: Promise<boolean> = this.ws.send(text);
-    promise.then((ok: boolean) => {
-      if (!ok) {
-        this.reportError('WebSocket send returned false');
-      }
-    }).catch((err: string) => {
-      this.reportError('WebSocket send error: ' + err);
-    });
+    const text: string = JSON.stringify(msg)
+    this.ws.send(text).catch((err: string) => {
+      this.reportError('WebSocket send error: ' + err)
+    })
   }
 
-  /**
-   * 主动关闭连接
-   */
+  // 主动关闭连接
   close(): void {
-    this.safeCloseInner();
-    this.ws = null;
-    this.isConnected = false;
+    this.safeCloseInner()
+    this.ws = null
+    this.isConnected = false
   }
 
-  /**
-   * 内部安全关闭
-   */
+  // 内部安全关闭 WebSocket
   private safeCloseInner(): void {
-    if (this.ws === null) {
-      return;
+    if (!this.ws) {
+      return
     }
-    const socket: webSocket.WebSocket = this.ws;
-    const promise: Promise<boolean> = socket.close();
-    promise.then((_value: boolean) => {
-      // ignore
-    }).catch((err: string) => {
-      this.reportError('WebSocket close error: ' + err);
-    });
+    this.ws.close().catch((err: string) => {
+      this.reportError('WebSocket close error: ' + err)
+    })
   }
 
-  /**
-   * 处理文本消息：JSON -> CollabMessage
-   */
+  // 处理收到的文本消息
   private handleTextMessage(text: string): void {
-    let parsed: CollabMessage;
+    let parsed: CollabMessage
     try {
-      parsed = JSON.parse(text) as CollabMessage;
-    } catch (_e) {
-      this.reportError('JSON parse error: ' + text);
-      return;
+      parsed = JSON.parse(text) as CollabMessage
+    } catch {
+      this.reportError('JSON parse error: ' + text)
+      return
     }
 
-    if (!parsed || !parsed.type || !parsed.clientId) {
-      this.reportError('Invalid collab message: ' + text);
-      return;
+    if (!parsed.type || !parsed.clientId) {
+      this.reportError('Invalid collab message: ' + text)
+      return
     }
 
-    if (this.onMsg) {
-      this.onMsg(parsed);
-    }
+    this.onMsg && this.onMsg(parsed)
   }
 
-  /**
-   * 统一错误上报
-   */
+  // 统一错误上报
   private reportError(msg: string): void {
-    console.error('[CollabClient] ' + msg);
-    if (this.onErr) {
-      this.onErr(msg);
-    }
+    console.error('[CollabClient] ' + msg)
+    this.onErr && this.onErr(msg)
   }
 
-  /**
-   * 对外提供连接状态
-   */
+  // 对外暴露当前连接状态
   get connected(): boolean {
-    return this.isConnected;
+    return this.isConnected
   }
 }
