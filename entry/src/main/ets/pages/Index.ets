@@ -2453,36 +2453,43 @@ struct Index {
     )
   }
 
-  // 把画布坐标转成图片像素坐标（所有工具共用）
+  // 将画布上的 UI 坐标统一转换为图片内部的像素坐标，供所有绘制工具共用
   private async uiToPixel(uiX: number, uiY: number): Promise<PixelPoint | undefined> {
+    // 没有底图时无法进行坐标映射
     if (!this.pixelMap) {
       return undefined
     }
+
+    // 画布尺寸异常时直接返回，避免除零等问题
     if (this.canvasWidth <= 0 || this.canvasHeight <= 0) {
       return undefined
     }
 
+    // 读取当前底图的像素尺寸信息
     const pm: image.PixelMap = this.pixelMap as image.PixelMap
     const info: image.ImageInfo = await pm.getImageInfo()
-
     const imgW: number = info.size.width
     const imgH: number = info.size.height
 
+    // 计算基础缩放比例（contain），保证整张图完整显示在画布中
     const scaleBase: number = Math.min(this.canvasWidth / imgW, this.canvasHeight / imgH)
     if (scaleBase <= 0) {
       return undefined
     }
 
+    // 结合当前缩放因子 zoom，得到图片在画布中的实际显示尺寸
     const realW: number = imgW * scaleBase * this.zoom
     const realH: number = imgH * scaleBase * this.zoom
 
+    // 计算图片左上角在画布坐标系中的位置（居中 + 平移）
     const imageLeft: number = (this.canvasWidth - realW) / 2 + this.offsetX
     const imageTop: number = (this.canvasHeight - realH) / 2 + this.offsetY
 
+    // 将 UI 坐标反算为图片内部的像素坐标
     const px: number = Math.floor((uiX - imageLeft) * (imgW / realW))
     const py: number = Math.floor((uiY - imageTop) * (imgH / realH))
 
-    // 关键：返回对象字面量也要“落到已声明的类型”上
+    // 返回 PixelPoint 类型，避免直接使用未声明类型的对象字面量
     const pt: PixelPoint = { x: px, y: py }
     return pt
   }
