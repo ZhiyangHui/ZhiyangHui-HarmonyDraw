@@ -84,10 +84,8 @@ export struct ColorWheelPicker {
     .height(this.wheelSize)
   }
 
-  /**
-   * 根据触摸点坐标计算颜色
-   * uiX / uiY：色环局部坐标系中的点击位置
-   */
+  //  根据触摸点坐标计算颜色
+  //  uiX / uiY：色环局部坐标系中的点击位置
   private handlePick(uiX: number, uiY: number): void {
     // 色环中心点坐标
     const cx = this.wheelSize / 2
@@ -133,12 +131,11 @@ export struct ColorWheelPicker {
     this.strokeB = rgb.b
   }
 
-  /**
-   * HSV 转 RGB
-   * h：色相 [0, 360)
-   * s：饱和度 [0, 1]
-   * v：明度 [0, 1]
-   */
+  // /**
+  //  * HSV 转 RGB
+  //  * h：色相 [0, 360)
+  //  * s：饱和度 [0, 1]
+  //  v：明度 [0, 1]
   private hsvToRgb(h: number, s: number, v: number): RGBColor {
     // c 表示当前颜色的最大色度（饱和度和明度共同决定）
     const c = v * s
