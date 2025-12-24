@@ -1140,33 +1140,6 @@ struct Index {
     return order
   }
 
-  private applyOverlayByAlpha(
-    baseData: Uint8Array,
-    overlayData: Uint8Array,
-    width: number,
-    height: number,
-    baseCh: ChannelOrder,
-    overCh: ChannelOrder
-  ): void {
-    const bpp: number = baseCh.bytesPerPixel
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx: number = (y * width + x) * bpp
-
-        const oaIdx: number = idx + overCh.a
-        const alphaOver: number = overlayData[oaIdx]
-        if (alphaOver === 0) {
-          continue
-        }
-
-        baseData[idx + baseCh.r] = overlayData[idx + overCh.r]
-        baseData[idx + baseCh.g] = overlayData[idx + overCh.g]
-        baseData[idx + baseCh.b] = overlayData[idx + overCh.b]
-        baseData[idx + baseCh.a] = alphaOver
-      }
-    }
-  }
 
   // 把logo图片变成pixelMap
   private async loadLogoPixelMap(): Promise<image.PixelMap> {
@@ -3754,7 +3727,7 @@ struct Index {
     return `${h}:${m}:${s}`;
   }
 
-  // 同步当前画布给其他协作端：底图 + 绘制层（不要拍平）
+  // 同步当前画布给其他协作端：底图 + 绘制层
   private async broadcastImageToPeers(pm: image.PixelMap, opDesc: string): Promise<void> {
     // 克隆底图，避免影响当前正在编辑的 PixelMap
     const basePmForSend: image.PixelMap = await this.clonePixelMap(pm)
