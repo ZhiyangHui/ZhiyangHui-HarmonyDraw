@@ -3754,56 +3754,61 @@ struct Index {
     return `${h}:${m}:${s}`;
   }
 
-  // 把当前画面（底图 + 绘制层 + 亮度/对比度）打包成 PNG + base64，并通过 WebSocket 同步给所有协作端
+  // 同步当前画布给其他协作端：底图 + 绘制层（不要拍平）
   private async broadcastImageToPeers(pm: image.PixelMap, opDesc: string): Promise<void> {
-    // 克隆一份临时 PixelMap 用于发送，避免直接修改当前正在使用的 pixelMap
-    const sendPm: image.PixelMap = await this.clonePixelMap(pm)
+    // 克隆底图，避免影响当前正在编辑的 PixelMap
+    const basePmForSend: image.PixelMap = await this.clonePixelMap(pm)
+
+    // 发送用的绘制层副本（可选）
+    let drawPmForSend: image.PixelMap | undefined = undefined
 
     try {
-      // 如果存在绘制层，则先把绘制层内容合并到发送用的 PixelMap 上
+      // 把亮度 / 对比度等调整烘焙进发送用底图
+      await this.bakeToneForSave(basePmForSend)
+
+      // 底图单独打包成 PNG，用于协作同步
+      const baseBase64: string = await this.packPixelMapToPngBase64(basePmForSend)
+
+      // 如果存在绘制层，单独克隆并打包（橡皮擦只作用这一层）
+      let drawBase64: string | undefined = undefined
       if (this.drawPixelMap) {
-        await this.mergeDrawLayerIntoBase(sendPm, this.drawPixelMap as image.PixelMap)
+        // 克隆绘制层，避免发送过程中被继续修改
+        drawPmForSend = await this.clonePixelMap(this.drawPixelMap as image.PixelMap)
+        drawBase64 = await this.packPixelMapToPngBase64(drawPmForSend)
       }
 
-      // 把当前亮度和对比度调整结果烘焙进 sendPm，只影响发送内容
-      await this.bakeToneForSave(sendPm)
-
-      // 创建 ImagePacker，把 PixelMap 打包成 PNG 格式
-      const packer = image.createImagePacker()
-      const packOpts: image.PackingOption = {
+      // 构造协作消息，必须携带 clientId
+      const msg = {} as CollabMessage
+      msg.type = 'imageSync'
+      msg.clientId = this.getSendClientId()
+      msg.payload = {
         format: 'image/png',
-        quality: 100
-      }
+        baseBase64: baseBase64,
+        drawBase64: drawBase64,
+        opDesc: opDesc
+      } as CollabImageSyncPayload
 
-      // 将 PixelMap 转成 PNG 的 ArrayBuffer
-      const pngBuffer: ArrayBuffer = await packer.packToData(sendPm, packOpts)
-      packer.release?.() // 打包完成后释放 packer 资源
-
-      // 把 PNG 的 ArrayBuffer 转成 base64，方便通过 WebSocket 传输
-      const pngBase64: string = this.arrayBufferToBase64(pngBuffer)
-
-      // 确定发送方 clientId，优先使用本地 clientId
-      const senderId: string = this.localClientId || this.clientId
-
-      // 构造协作同步消息，包含图片数据和本次操作描述
-      const msg: CollabMessage = {
-        type: 'imageSync',
-        clientId: senderId,
-        payload: {
-          format: 'image/png',
-          dataBase64: pngBase64,
-          opDesc: opDesc
-        } as CollabImageSyncPayload
-      }
-
-      // 通过协作客户端把消息发送给所有已连接的协作端
+      // 通过 WebSocket 广播给其他协作端
       this.collabClient.send(msg)
-      console.info('[Collab] broadcast image-sync, size(base64)=', pngBase64.length)
+      console.info('[Collab] broadcast image-sync (base+draw), baseSize=', baseBase64.length, ', drawSize=', drawBase64 ? drawBase64.length : 0)
     } finally {
-      // 无论成功还是失败，都要释放临时 PixelMap，避免内存泄漏
-      sendPm.release?.()
+      // 释放发送过程中创建的临时 PixelMap，避免内存泄漏
+      basePmForSend.release?.()
+      if (drawPmForSend) {
+        drawPmForSend.release?.()
+      }
     }
   }
+
+  // 获取用于发送协作消息的 clientId（优先服务器分配）
+  private getSendClientId(): string {
+    if (this.localClientId.length > 0) {
+      return this.localClientId
+    }
+    // 服务器尚未分配时，使用本地生成的兜底 clientId
+    return this.clientId
+  }
+
 
   // 统一封装：每次图像内容发生变化后，记录一条操作日志，并在需要时同步给其他协作端
   private async logAndSyncAfterImageChange(opDesc: string): Promise<void> {
@@ -3861,47 +3866,85 @@ struct Index {
     return buf // 返回二进制缓冲区
   }
 
-  // 把远端同步过来的 base64 PNG 解码成 PixelMap，并整体替换本地画面
-  private async applyRemoteImage(payload: CollabImageSyncPayload): Promise<void> {
-    // 把 base64 的 PNG 数据解码成 ArrayBuffer
-    const buf: ArrayBuffer = this.base64ToArrayBuffer(payload.dataBase64)
-    // 用二进制数据创建 ImageSource
-    const imgSource: image.ImageSource = image.createImageSource(buf)
-    // 从 ImageSource 生成可编辑的 PixelMap
-    const remotePm: image.PixelMap = await imgSource.createPixelMap({ editable: true })
-    imgSource.release?.() // 释放 ImageSource，避免资源泄漏
+  // 将 PixelMap 打包成 PNG 并转成 base64，方便通过协作通道传输
+  private async packPixelMapToPngBase64(pm: image.PixelMap): Promise<string> {
+    // 创建图片打包器
+    const packer: image.ImagePacker = image.createImagePacker()
+    const packOpts: image.PackingOption = {
+      format: 'image/png',
+      quality: 100
+    }
+    try {
+      // 打包成 PNG 二进制数据
+      const pngBuffer: ArrayBuffer = await packer.packToData(pm, packOpts)
+      // 转成 base64 字符串
+      const pngBase64: string = this.arrayBufferToBase64(pngBuffer)
+      return pngBase64
+    } finally {
+      // 释放打包器，避免资源泄漏
+      packer.release?.()
+    }
+  }
 
-    // 在替换为远端画面前，把当前画面压入历史栈，支持撤销
+  // 从 PNG(base64) 还原出一个可编辑的 PixelMap
+  private async pixelMapFromPngBase64(pngBase64: string): Promise<image.PixelMap> {
+    // base64 转回 ArrayBuffer
+    const buf: ArrayBuffer = this.base64ToArrayBuffer(pngBase64)
+    // 创建图片数据源
+    const imgSource: image.ImageSource = image.createImageSource(buf)
+    try {
+      // 生成可编辑的 PixelMap
+      const pm: image.PixelMap = await imgSource.createPixelMap({ editable: true })
+      return pm
+    } finally {
+      // 释放 ImageSource
+      imgSource.release?.()
+    }
+  }
+
+  // 应用来自协作端的图像同步数据（底图 + 绘制层）
+  private async applyRemoteImage(payload: CollabImageSyncPayload): Promise<void> {
+    // 先还原远端底图
+    const remoteBasePm: image.PixelMap = await this.pixelMapFromPngBase64(payload.baseBase64)
+
+    // 替换画面前，先把当前状态存入历史栈，支持撤销
     if (this.pixelMap) {
       const currentPm: image.PixelMap = this.pixelMap as image.PixelMap
       const backupPm: image.PixelMap = await this.clonePixelMap(currentPm)
       await this.pushHistorySnapshot(true, backupPm)
     }
 
-    // 释放当前底图 PixelMap
+    // 释放当前底图资源
     if (this.pixelMap) {
       (this.pixelMap as image.PixelMap).release?.()
     }
 
-    // 用远端传来的 PixelMap 直接作为新的底图
-    this.pixelMap = remotePm
+    // 用远端底图替换当前底图
+    this.pixelMap = remoteBasePm
 
-    // 更新 originalPixelMap，后续 resetView 以协作后的状态为基准
+    // 更新 originalPixelMap，作为后续重置视图的基准
     if (this.originalPixelMap) {
       this.originalPixelMap.release?.()
     }
-    this.originalPixelMap = await this.clonePixelMap(remotePm)
+    this.originalPixelMap = await this.clonePixelMap(remoteBasePm)
 
-    // 清空绘制层，协作图像已经是“拍平”的最终结果
+    // 清空本地绘制层，准备接收远端绘制层
     if (this.drawPixelMap) {
       this.drawPixelMap.release?.()
       this.drawPixelMap = undefined
     }
-    this.drawPixelVersion++ // 通知叠加层发生变化
 
-    console.info('[Collab] applyRemoteImage: replace pixelMap from remote and clear draw layer')
+    // 如果远端带了绘制层，则一并还原
+    if (payload.drawBase64) {
+      const remoteDrawPm: image.PixelMap = await this.pixelMapFromPngBase64(payload.drawBase64)
+      this.drawPixelMap = remoteDrawPm
+    }
 
-    // 重置视图相关参数，避免远端状态影响本地显示
+    // 标记绘制层变化，触发叠加层刷新
+    this.drawPixelVersion++
+    console.info('[Collab] applyRemoteImage: replace base+draw from remote')
+
+    // 重置缩放与平移，避免继承远端的视图状态
     this.zoom = 1.0
     this.offsetX = 0
     this.offsetY = 0
@@ -3909,9 +3952,11 @@ struct Index {
     this.contrastLevel = 0.0
     this.accumulatedRotate = 0
 
-    // 更新像素版本号，驱动 UI 刷新
+    // 更新像素版本号，触发整体重绘
     this.pixelVersion++
   }
+
+
 
   // 在任何会修改画面的操作之前，先保存一份“完整画面”的快照，用于撤销
   private async pushFullSnapshotBeforeChange(): Promise<void> {

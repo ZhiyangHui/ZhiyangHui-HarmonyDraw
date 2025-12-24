@@ -7,9 +7,10 @@ import { BusinessError } from '@kit.BasicServicesKit'
 
 // 图片同步消息的 payload，表示一整张画面
 export interface CollabImageSyncPayload {
-  format: string // 图片格式，例如 'image/png'
-  dataBase64: string // 整张图片的 PNG base64 数据
-  opDesc?: string // 可选的操作描述文字
+  format: 'image/png'
+  baseBase64: string              // 底图
+  drawBase64?: string             // 绘制层（可选：没有绘制层就不发）
+  opDesc?: string
 }
 
 // 服务器给客户端分配身份时使用的 payload
