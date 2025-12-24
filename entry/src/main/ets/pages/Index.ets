@@ -192,7 +192,7 @@ struct Index {
   ]
   private nextColorIndex: number = 0 // 下一个分配颜色索引
   // ====================== 协作状态与日志 ======================
-  @State collabEnabled: boolean = true // 是否启用协作
+  @State collabEnabled: boolean = false // 是否启用协作
   @State showOpLog: boolean = false // 是否显示操作日志
   @State opLogList: Array<OperationLogItem> = [] // 操作日志列表
   private opSeq: number = 0 // 操作日志自增序号
